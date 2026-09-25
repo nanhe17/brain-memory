@@ -1,0 +1,20 @@
+# English episodes and cues — the pipeline must not silently assume Chinese,
+# and async distractors must not outrank the Rust/Tokio episode.
+name: english_recall
+tags: [recall]
+episodes:
+  - text: "The user is building an async web service with Rust and Tokio"
+    days_ago: 6
+  - text: "The user compared React and Svelte for the dashboard UI"
+    days_ago: 4
+  - text: "The user configured a self-hosted GitLab runner for CI"
+    days_ago: 2
+  - text: "The user read about async patterns in JavaScript promises"
+    days_ago: 1
+cues:
+  - text: "How is the async web service going?"
+    expect: [0]
+    k: 1
+  - text: "dashboard UI framework choice"
+    expect: [1]
+    k: 1

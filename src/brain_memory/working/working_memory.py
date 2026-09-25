@@ -71,6 +71,17 @@ class WorkingMemory:
     def last_recall(self) -> list[RecallResult]:
         return list(self._last_recall)
 
+    def snapshot(self) -> str:
+        """Compact text of the current state, for LLM query-expansion context."""
+        lines: list[str] = []
+        if self.state.current_goal:
+            lines.append(f"goal: {self.state.current_goal}")
+        if self.state.active_entities:
+            lines.append(f"active entities: {', '.join(self.state.active_entities[:10])}")
+        if self.state.unresolved_questions:
+            lines.append(f"open questions: {'; '.join(self.state.unresolved_questions[:3])}")
+        return "\n".join(lines)
+
     def build_prompt_block(self, *, token_budget: int | None = None) -> str:
         """Render memories for injection into an LLM prompt, within budget.
 

@@ -1,0 +1,13 @@
+# Benchmark 4 (mini): contradictory preferences must coexist and both stay
+# retrievable — the system must never merge or lose either side.
+name: preference_contamination
+tags: [contamination]
+episodes:
+  - text: "用户喜欢用 Python 做开发"
+    days_ago: 20
+  - text: "用户说不喜欢 Python 的动态类型，偏好加类型约束"
+    days_ago: 10
+cues:
+  - text: "用户对 Python 的态度"
+    expect: [0, 1]
+    k: 2

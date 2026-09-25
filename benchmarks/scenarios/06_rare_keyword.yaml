@@ -1,0 +1,16 @@
+# Rare, specific tokens (Forge / 三视图) must find their episode through the
+# keyword channel even when embeddings are weak.
+name: rare_keyword_cue
+tags: [recall]
+episodes:
+  - text: "Minecraft Forge 模组的三视图和气动外形设计已经完成"
+    days_ago: 12
+  - text: "今天和运维同事讨论了 K8s 集群的升级计划"
+    days_ago: 2
+cues:
+  - text: "三视图设计"
+    expect: [0]
+    k: 1
+  - text: "Forge 模组"
+    expect: [0]
+    k: 1

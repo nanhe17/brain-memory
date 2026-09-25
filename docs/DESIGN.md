@@ -92,6 +92,53 @@ Phase 1 implements active → archived (soft) → restore.  The `forgotten`
 terminal state and the decay scheduler that moves memories into it are Phase
 5; the enum and status column exist now so transitions stay explicit.
 
+## Phase 2 decisions
+
+### Measure first, then touch the retriever
+
+The evaluation harness (`brain_memory.eval` + `benchmarks/scenarios/`) was
+built before any retrieval change.  Scenarios are YAML: episodes with
+relative ages, cues with expected/forbidden episode *indexes*, tags mirroring
+the design doc's benchmark taxonomy (`recall` / `separation` / `temporal` /
+`contamination`).  Fresh in-memory engine per run keeps ids deterministic.
+Weight search samples the 7-factor simplex with a seeded Dirichlet — grid
+search over 7 dimensions is hopeless, random search is reproducible.
+
+Honest caveat baked into the docs: the seed scenarios are regression
+canaries; with the hash embedder they saturate near 1.0.  Real tuning needs
+a cloud embedder and harder scenarios — the harness is built for both.
+
+### Query expansion is advisory, never authoritative
+
+The LLM rewrites the cue using the working-memory snapshot (goal, active
+entities, open questions), but the original cue always stays its own
+retrieval channel.  A hallucinated or drifted rewrite can only *add*
+candidates; it can never remove the ones the raw cue would have found.
+Expansion may also propose a time range (ISO), which fills in — never
+overrides — caller-supplied filters.  Any failure returns None; recall
+degrades silently.
+
+### Blind rerank, fused — not delegated
+
+The reranker scores candidates seeing *content only*.  Showing it factor
+scores would anchor its judgment and double-count recency/importance, which
+it cannot assess from text anyway.  The final score is
+`mix * llm_relevance + (1 - mix) * factor_score` (mix default 0.4): the LLM
+moves memories whose *meaning* matches, while the deterministic factors keep
+their voice.  Missing ids score neutral 0.5; transport/parse failures fall
+back to pure factor ranking.  Both LLM stages are gated by
+`MEMORY_QUERY_EXPANSION` / `MEMORY_RERANK` (default `auto` = active iff an
+LLM endpoint is configured), so the no-key offline behavior is bit-identical
+to Phase 1.
+
+### Session-entity boost is factor-only
+
+Working-memory entities bias the entity-overlap factor toward the current
+task, but never become query terms.  The first implementation merged them
+into the cue, which leaked them into the FTS MATCH expression — a stale
+session entity resurrected fresh-but-unrelated memories on recency.  Query
+terms come from cue variants alone; the boost only reweights factors.
+
 ## Known limitations (accepted for Phase 1)
 
 - Heuristic entity extraction misses bare lowercase latin tokens (e.g.

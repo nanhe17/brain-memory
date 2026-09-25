@@ -64,6 +64,13 @@ class MemoryConfig(BaseModel):
     # How many candidates each channel (vector / keyword) contributes before ranking.
     candidate_pool_per_channel: int = 32
 
+    # ---- Phase 2: LLM-assisted retrieval (all "auto" = active iff LLM configured) ----
+    query_expansion: Literal["auto", "off"] = "auto"
+    rerank: Literal["auto", "off"] = "auto"
+    rerank_top_n: int = Field(default=20, ge=1)
+    rerank_mix: float = Field(default=0.4, ge=0.0, le=1.0)
+    rerank_timeout: float = Field(default=8.0, gt=0.0)
+
     @classmethod
     def from_env(cls, env_file: str | os.PathLike | None = None) -> "MemoryConfig":
         """Build a config from ``MEMORY_*`` environment variables.
@@ -108,4 +115,9 @@ class MemoryConfig(BaseModel):
             llm_api_key=get("LLM_API_KEY", ""),
             weights=weights,
             recency_half_life_days=float(get("RECENCY_HALF_LIFE_DAYS", "14.0")),
+            query_expansion=get("QUERY_EXPANSION", "auto").strip().lower(),
+            rerank=get("RERANK", "auto").strip().lower(),
+            rerank_top_n=int(get("RERANK_TOP_N", "20")),
+            rerank_mix=float(get("RERANK_MIX", "0.4")),
+            rerank_timeout=float(get("RERANK_TIMEOUT", "8")),
         )

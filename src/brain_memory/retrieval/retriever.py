@@ -9,6 +9,7 @@ covers exact terms and rare entities that embeddings blur together.
 
 from __future__ import annotations
 
+import math
 from datetime import datetime, timezone
 
 import numpy as np
@@ -57,27 +58,39 @@ class Retriever:
 
     def retrieve(
         self,
-        cue: ExtractedExperience,
-        cue_embedding: np.ndarray,
+        cue_variants: list[ExtractedExperience],
+        vectors: list[np.ndarray],
         k: int | None = None,
         *,
         source: str | None = None,
         time_from: datetime | None = None,
         time_to: datetime | None = None,
         require_entities: list[str] | None = None,
+        entity_boost: list[str] | None = None,
     ) -> list[RecallResult]:
+        """Rank candidates for one or more cue variants (e.g. original + LLM
+        expansion).  Channels union across variants: semantic takes the max
+        similarity, keyword the best (lowest) bm25 rank.
+
+        ``entity_boost`` feeds the entity-overlap *factor* only — it never
+        becomes a query term.  Session entities bias ranking toward memories
+        related to what the agent is currently doing without widening the
+        candidate channels (query terms come from the variants alone).
+        """
         k = k or self._config.default_top_k
         pool = self._config.candidate_pool_per_channel
         now = datetime.now(timezone.utc)
 
-        candidates: dict[int, tuple[float, float]] = {}  # id -> (semantic, bm25_rank)
-        for episode_id, similarity in self._index.search(cue_embedding, pool):
-            candidates[episode_id] = (similarity, -1.0)
-        match_expr = build_fts_match_expr(cue)
-        if match_expr:
-            for episode, rank in self._store.fts_search(match_expr, pool):
-                semantic, _ = candidates.get(episode.id, (0.0, -1.0))
-                candidates[episode.id] = (semantic, rank)
+        candidates: dict[int, tuple[float, float]] = {}  # id -> (best semantic, best bm25 rank)
+        for variant, vector in zip(cue_variants, vectors):
+            for episode_id, similarity in self._index.search(vector, pool):
+                best_sim, best_rank = candidates.get(episode_id, (-1.0, math.inf))
+                candidates[episode_id] = (max(best_sim, similarity), best_rank)
+            match_expr = build_fts_match_expr(variant)
+            if match_expr:
+                for episode, rank in self._store.fts_search(match_expr, pool):
+                    best_sim, best_rank = candidates.get(episode.id, (-1.0, math.inf))
+                    candidates[episode.id] = (best_sim, min(best_rank, rank))
         if not candidates:
             return []
 
@@ -90,15 +103,21 @@ class Retriever:
         if not episodes:
             return []
 
-        cue_entities = {e.casefold() for e in cue.entities}
-        cue_context = {t.casefold() for t in cue.topics}
-        if cue.context:
-            cue_context |= ranking._context_tokens(cue.context)
+        cue_entities: set[str] = set()
+        cue_context: set[str] = set()
+        for variant in cue_variants:
+            cue_entities |= {e.casefold() for e in variant.entities}
+            cue_context |= {t.casefold() for t in variant.topics}
+            if variant.context:
+                cue_context |= ranking._context_tokens(variant.context)
+        if entity_boost:
+            cue_entities |= {e.casefold() for e in entity_boost}
+        cue_entities = set(sorted(cue_entities)[:12])
 
         results: list[RecallResult] = []
         for episode in episodes:
             semantic, bm25_rank = candidates[episode.id]
-            keyword = ranking.normalize_bm25(bm25_rank) if bm25_rank >= 0 else 0.0
+            keyword = ranking.normalize_bm25(bm25_rank) if bm25_rank < math.inf else 0.0
             factors = ranking.compute_factors(
                 episode=episode,
                 semantic=semantic,

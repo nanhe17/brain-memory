@@ -92,11 +92,52 @@ All knobs are `MEMORY_*` environment variables — see [`.env.example`](.env.exa
 | `MEMORY_EMBEDDING_MODEL` | `embedding-3` | e.g. `embedding-3` (GLM) / `text-embedding-3-small` (OpenAI) |
 | `MEMORY_W_*` | see `.env.example` | retrieval factor weights (auto-normalized) |
 | `MEMORY_RECENCY_HALF_LIFE_DAYS` | `14` | exponential recency decay |
-| `MEMORY_LLM_MODEL` / `MEMORY_LLM_API_KEY` | empty | enables the LLM experience parser; without it the heuristic parser runs |
+| `MEMORY_LLM_MODEL` / `MEMORY_LLM_API_KEY` | empty | enables the LLM experience parser, query expansion, and reranker |
+| `MEMORY_QUERY_EXPANSION` | `auto` | `auto` = active iff LLM configured; `off` = force disable |
+| `MEMORY_RERANK` | `auto` | same gating for the blind LLM reranker |
+| `MEMORY_RERANK_TOP_N` / `MEMORY_RERANK_MIX` / `MEMORY_RERANK_TIMEOUT` | `20` / `0.4` / `8` | rerank pool size, LLM-vs-factor fusion weight, timeout |
 
-With no API key the engine silently uses the deterministic hash embedder:
-the whole pipeline runs offline, but semantic quality is token-overlap only.
-Point it at a real embedding endpoint for meaningful similarity.
+With no API key the engine silently uses the deterministic hash embedder and
+skips every LLM stage: the whole pipeline runs offline, and recall behaves
+exactly like Phase 1.  Point it at a real embedding endpoint (and optionally
+an LLM endpoint) for meaningful similarity and query understanding.
+
+## Phase 2: measuring and improving retrieval
+
+### Evaluation harness
+
+Scenarios live in [`benchmarks/scenarios/`](benchmarks/scenarios) — each file
+encodes episodes (with relative ages), fires cues with expected/forbidden
+episode indexes, and tags itself (`recall` / `separation` / `temporal` /
+`contamination`, mirroring the design doc's benchmarks):
+
+```bash
+brain-memory-eval --scenarios benchmarks/scenarios            # baseline table
+brain-memory-eval --scenarios benchmarks/scenarios --sweep 60 # weight search
+brain-memory-eval --scenarios benchmarks/scenarios --report report.md
+```
+
+The sweep samples the 7-factor weight simplex (fixed seed, reproducible),
+ranks configurations by Recall@k / MRR / violations, and prints the best
+config as `MEMORY_W_*` exports.  Run it with a cloud embedder configured for
+meaningful tuning; the hash embedder is for CI regression.
+
+### LLM query expansion and blind rerank
+
+With `MEMORY_LLM_*` configured, `recall()` gains two advisory stages:
+
+1. **Query expansion** — the cue plus the working-memory snapshot is rewritten
+   into a self-contained query (resolving "那个模组" via session entities) plus
+   up to two sub-queries.  Original and rewritten cues are both retrieved as
+   channels, so a bad rewrite can only add candidates, never remove them.
+2. **Blind rerank** — the top candidates are scored for topical relevance by
+   the LLM seeing *content only* (no factor scores, no anchoring), then fused:
+   `final = mix * llm_relevance + (1 - mix) * factor_score`.  Recency and
+   importance keep their influence through the factor score.  Timeout or
+   failure falls back to the pure factor ranking.
+
+Session entities also bias the entity-overlap factor toward the current task
+(factor-only — they never become query terms).
 
 ## The retrieval score
 
@@ -135,23 +176,23 @@ frequency, CJK-aware FTS indexing, heuristic-first importance scoring.
 
 ```bash
 pip install -e '.[dev]'
-pytest
+pytest                 # 101 tests
 ```
 
-60 tests cover parsing, embeddings, storage, ranking, retrieval, working
-memory, engine behaviors (including cross-session persistence and
-similar-memory separation), and the HTTP layer.
+Tests cover parsing, embeddings, storage, ranking, retrieval, working memory,
+engine behaviors, the HTTP layer, the LLM expansion/rerank stages (mocked
+transport), and the evaluation harness.
 
 ## Roadmap
 
 | Phase | Scope | Status |
 |---|---|---|
-| 1 | episodic + working memory + hybrid retrieval + API | ✅ this repo |
-| 2 | pattern completion, LLM rerank, retrieval tuning harness | planned |
+| 1 | episodic + working memory + hybrid retrieval + API | ✅ |
+| 2 | eval harness + weight sweep, LLM query expansion, blind rerank fusion, session-entity boost | ✅ |
 | 3 | replay → clustering → semantic memory (consolidation) | tables reserved |
 | 4 | reconsolidation: conflict detection, versioning | planned |
 | 5 | decay scheduler, memory strength, archive GC | soft delete done |
-| 6-7 | memory graph, inspector UI, benchmark suite | planned |
+| 6-7 | memory graph, inspector UI, full benchmark suite | planned |
 
 ## License
 

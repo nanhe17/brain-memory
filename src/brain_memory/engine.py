@@ -1,14 +1,18 @@
 """MemoryEngine — the facade that expresses memory *behaviors*.
 
 Public surface (design doc §4): encode / recall / inspect / forget / restore
-/ stats, plus a session-scoped working memory.  Everything lifecycle-related
-(timestamps, hashing, storage, stats) is deterministic code here; LLMs only
-ever assist inside the parser.
+/ stats, plus a session-scoped working memory.  The recall pipeline is:
+parse cue -> working-memory boost -> optional LLM query expansion (cue
+variants retrieved in union) -> normalized factor ranking -> optional blind
+LLM rerank fused into the score.  Every LLM stage is gated by config and
+degrades to the deterministic path on failure; everything lifecycle-related
+(timestamps, hashing, storage, stats) is pure code here.
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+import logging
+from datetime import datetime, timezone
 from types import TracebackType
 
 import numpy as np
@@ -29,10 +33,14 @@ from brain_memory.models import (
     MemoryStatus,
     RecallResult,
 )
+from brain_memory.query.expander import LLMQueryExpander
+from brain_memory.retrieval.reranker import LLMReranker
 from brain_memory.retrieval.retriever import Retriever
 from brain_memory.retrieval.vector_index import VectorIndex
 from brain_memory.storage.db import Database
 from brain_memory.working.working_memory import WorkingMemory
+
+logger = logging.getLogger(__name__)
 
 
 def _embedding_text(content: str, entities: list[str], topics: list[str]) -> str:
@@ -57,6 +65,8 @@ class MemoryEngine:
         self._embedder = self._build_embedder()
         self._parser = self._build_parser()
         self._retriever = Retriever(self._store, self._index, self.config)
+        self._expander = self._build_expander()
+        self._reranker = self._build_reranker()
         self.working = WorkingMemory()
 
     # -- construction ---------------------------------------------------------
@@ -80,6 +90,28 @@ class MemoryEngine:
                 fallback=heuristic,
             )
         return heuristic
+
+    def _llm_ready(self) -> bool:
+        return bool(self.config.llm_model and self.config.llm_api_key)
+
+    def _build_expander(self) -> LLMQueryExpander | None:
+        if self.config.query_expansion == "auto" and self._llm_ready():
+            return LLMQueryExpander(
+                base_url=self.config.llm_base_url,
+                api_key=self.config.llm_api_key,
+                model=self.config.llm_model,
+            )
+        return None
+
+    def _build_reranker(self) -> LLMReranker | None:
+        if self.config.rerank == "auto" and self._llm_ready():
+            return LLMReranker(
+                base_url=self.config.llm_base_url,
+                api_key=self.config.llm_api_key,
+                model=self.config.llm_model,
+                timeout=self.config.rerank_timeout,
+            )
+        return None
 
     @property
     def embedder(self) -> EmbeddingProvider:
@@ -116,27 +148,119 @@ class MemoryEngine:
         time_to: datetime | None = None,
         require_entities: list[str] | None = None,
         touch: bool = True,
+        use_working_memory: bool = True,
     ) -> list[RecallResult]:
         """Retrieve memories for a (possibly partial) cue, with explanations.
 
         ``touch=True`` reactivation-bookkeeps the hits: access counts rise,
         which feeds the frequency factor on future recalls (doc §15).
         """
+        final_k = k or self.config.default_top_k
         parsed_cue = self._parser.parse(cue)
-        vector = self._embed(parsed_cue)
+        boost = self._working_memory_entities() if use_working_memory else None
+
+        variants, expanded_from, expanded_to = self._expand_query(parsed_cue, time_from, time_to)
+        vectors = self._embed_variants(variants)
+        limit = self.config.rerank_top_n if self._reranker is not None else final_k
         results = self._retriever.retrieve(
-            parsed_cue,
-            vector,
-            k,
+            variants,
+            vectors,
+            k=limit,
             source=source,
-            time_from=time_from,
-            time_to=time_to,
+            time_from=expanded_from or time_from,
+            time_to=expanded_to or time_to,
             require_entities=require_entities,
+            entity_boost=boost,
         )
+        if self._reranker is not None and len(results) >= 2:
+            results = self._fuse_rerank(cue, results)
+        results = results[:final_k]
         if touch and results:
             self._store.touch([result.episode.id for result in results])
         self.working.remember_recall(results)
         return results
+
+    # -- recall pipeline stages -------------------------------------------------
+
+    def _working_memory_entities(self) -> list[str] | None:
+        """Session entities that bias the entity-overlap factor toward
+        memories related to the current task.  Factor-only by design: they
+        must never widen the query channels (a stale session entity in the
+        FTS terms would resurrect unrelated memories)."""
+        entities = self.working.state.active_entities[:5]
+        return entities or None
+
+    def _expand_query(
+        self,
+        parsed_cue: ExtractedExperience,
+        time_from: datetime | None,
+        time_to: datetime | None,
+    ) -> tuple[list[ExtractedExperience], datetime | None, datetime | None]:
+        """Original cue plus optional LLM expansion variants (advisory only:
+        the original is always kept as its own retrieval channel)."""
+        variants = [parsed_cue]
+        expanded_from = expanded_to = None
+        if self._expander is not None:
+            try:
+                expansion = self._expander.expand(parsed_cue.content, self.working.snapshot())
+            except Exception as exc:  # noqa: BLE001 — expansion is advisory
+                logger.warning("query expansion failed (%s); using original cue", exc)
+                expansion = None
+            if expansion is not None:
+                expanded_from = self._parse_iso(expansion.time_from)
+                expanded_to = self._parse_iso(expansion.time_to)
+                for text in [expansion.rewritten, *expansion.sub_queries[:2]]:
+                    text = (text or "").strip()
+                    if not text or any(text == variant.content for variant in variants):
+                        continue
+                    try:
+                        variants.append(self._parser.parse(text))
+                    except ValueError:
+                        continue
+        return variants, expanded_from, expanded_to
+
+    def _embed_variants(self, variants: list[ExtractedExperience]) -> list[np.ndarray]:
+        texts = [_embedding_text(v.content, v.entities, v.topics) for v in variants]
+        return list(self._embedder.embed_texts(texts))
+
+    def _fuse_rerank(self, cue: str, results: list[RecallResult]) -> list[RecallResult]:
+        """Blind LLM relevance fused into the factor score (reranker sees
+        content only).  Any failure keeps the pure factor ranking."""
+        try:
+            scores = self._reranker.rerank(cue, results)
+        except Exception as exc:  # noqa: BLE001 — reranking is advisory
+            logger.warning("rerank failed (%s); keeping factor ranking", exc)
+            return results
+        mix = self.config.rerank_mix
+        fused: list[RecallResult] = []
+        for result, relevance in zip(results, scores):
+            new_score = mix * relevance + (1.0 - mix) * result.score
+            fused.append(
+                result.model_copy(
+                    update={
+                        "llm_relevance": relevance,
+                        "score": new_score,
+                        "reasons": [
+                            *result.reasons,
+                            f"llm_relevance: {relevance:.2f} × w{mix:.2f} → {mix * relevance:.2f}",
+                        ],
+                    }
+                )
+            )
+        fused.sort(key=lambda result: -result.score)
+        return fused
+
+    @staticmethod
+    def _parse_iso(value: str | None) -> datetime | None:
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
 
     def inspect(self, memory_id: int) -> dict | None:
         """Full memory details plus the most related active memories."""

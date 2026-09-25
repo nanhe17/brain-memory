@@ -100,6 +100,8 @@ class RecallResult(BaseModel):
     score: float
     factors: FactorScores
     reasons: list[str] = Field(default_factory=list)
+    # Set when the blind LLM reranker contributed to the final score.
+    llm_relevance: float | None = None
 
 
 class EncodeResult(BaseModel):

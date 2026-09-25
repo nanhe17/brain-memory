@@ -1,0 +1,18 @@
+# Benchmark 2 (mini): preference drift.  The latest stance must outrank the
+# history when the cue asks about *now*, and all three stances coexist.
+name: preference_drift
+tags: [temporal]
+episodes:
+  - text: "用户喜欢 Java 后端，每天写 Spring 项目"
+    days_ago: 60
+  - text: "用户说不想做 Java 了，打算转 AI 方向"
+    days_ago: 30
+  - text: "用户最近又重新学 Java，准备回来继续做后端"
+    days_ago: 1
+cues:
+  - text: "用户现在对 Java 是什么态度？"
+    expect: [2]
+    k: 1
+  - text: "用户对 Java 态度的变化历史"
+    expect: [0, 1, 2]
+    k: 3

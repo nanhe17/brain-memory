@@ -1,0 +1,22 @@
+# Benchmark 3 (mini): four similar projects; a cue about one must return
+# that one only — similar-but-different experiences stay separate.
+name: similar_java_projects
+tags: [separation]
+episodes:
+  - text: "用户在重构 mall-project-A 的订单模块，用的是 Spring 框架"
+    days_ago: 10
+  - text: "用户在写 mall-project-B 的支付网关，也用了 Spring"
+    days_ago: 8
+  - text: "用户的 mall-project-C 主要负责库存查询和报表"
+    days_ago: 6
+  - text: "mall-project-D 也开始动工了，先搭订单的骨架"
+    days_ago: 4
+cues:
+  - text: "mall-project-B 的支付网关进展如何？"
+    expect: [1]
+    forbid: [0, 2, 3]
+    k: 1
+  - text: "库存查询那个项目"
+    expect: [2]
+    forbid: [0, 1, 3]
+    k: 1

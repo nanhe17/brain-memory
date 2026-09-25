@@ -1,0 +1,20 @@
+# Java vs JavaScript vs JVM — lexically confusable entities must not blur,
+# even when a distractor shares the token.
+name: entity_disambiguation
+tags: [separation]
+episodes:
+  - text: "用户在学习 Java 语言和 JVM 调优"
+    days_ago: 5
+  - text: "用户在用 JavaScript 写网页爬虫脚本"
+    days_ago: 4
+  - text: "用户在用 Rust 重写一个命令行小工具"
+    days_ago: 3
+  - text: "用户用 Java 给自己的世界存档写了个备份小工具"
+    days_ago: 2
+cues:
+  - text: "用户学 Java 语言和 JVM 学到哪了？"
+    expect: [0]
+    k: 1
+  - text: "JavaScript 爬虫脚本的情况"
+    expect: [1]
+    k: 1

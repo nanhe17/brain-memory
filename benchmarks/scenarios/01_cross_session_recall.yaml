@@ -1,0 +1,22 @@
+# Benchmark 1 (mini): a fact from an earlier session must resurface via an
+# indirect cue, against distractors from adjacent domains.
+name: cross_session_indirect_cue
+tags: [recall]
+episodes:
+  - text: "The user is developing a Minecraft mod about the P-51 Mustang fighter plane"
+    days_ago: 7
+  - text: "The user reviewed Python packaging with uv and virtualenvs"
+    days_ago: 5
+  - text: "The user's favorite editor is Neovim"
+    days_ago: 3
+  - text: "用户在玩泰拉瑞亚的灾厄 mod，卡在机械 Boss"
+    days_ago: 6
+  - text: "用户提到想给系统装一个 NixOS 虚拟机折腾一下"
+    days_ago: 4
+cues:
+  - text: "帮我继续之前那个飞机模组"
+    expect: [0]
+    k: 3
+  - text: "战斗机建模那件事后来怎么样了？"
+    expect: [0]
+    k: 2

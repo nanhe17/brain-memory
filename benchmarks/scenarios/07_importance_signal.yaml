@@ -1,0 +1,15 @@
+# A memory the user explicitly asked to remember (importance signals) must
+# outrank fresher small talk for a cue about its content.
+name: importance_signal_dominance
+tags: [recall]
+episodes:
+  - text: "请记住：用户的生日是 5 月 12 日，这件事很重要"
+    days_ago: 15
+  - text: "今天聊了聊天气，阳光不错"
+    days_ago: 0
+  - text: "用户抱怨地铁太挤了"
+    days_ago: 0
+cues:
+  - text: "用户的生日是什么时候？"
+    expect: [0]
+    k: 1

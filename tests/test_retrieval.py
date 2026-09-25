@@ -83,5 +83,23 @@ def test_retriever_direct_use(populated):
         populated._store, populated._index, populated.config
     )
     cue = HeuristicExperienceParser().parse("飞机模组")
-    results = retriever.retrieve(cue, populated.embedder.embed_texts(["飞机模组"])[0], k=2)
+    vector = populated.embedder.embed_texts(["飞机模组"])[0]
+    results = retriever.retrieve([cue], [vector], k=2)
     assert 1 <= len(results) <= 2
+
+
+def test_retriever_multi_variant_union(populated):
+    retriever = Retriever(
+        populated._store, populated._index, populated.config
+    )
+    parser = HeuristicExperienceParser()
+    cue_a = parser.parse("飞机模组")
+    cue_b = parser.parse("Minecraft Forge 三视图")
+    texts = [cue_a.content, cue_b.content]
+    vectors = populated.embedder.embed_texts(texts)
+    results = retriever.retrieve([cue_a, cue_b], list(vectors), k=5)
+    assert results
+    # a variant that names 三视图 must lift the Forge episode via keyword channel
+    assert any("Forge" in r.episode.content for r in results)
+    # factor sets union across variants
+    assert results[0].factors.keyword > 0 or results[0].factors.semantic > 0
