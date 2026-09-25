@@ -1,0 +1,112 @@
+# Design Notes & Decision Record
+
+This file records the load-bearing decisions of the Phase 1 implementation
+and where it deliberately deviates from the original design conversation
+(`someMemory.md`).  The original document remains the architectural north
+star; this file is what the code actually does and why.
+
+## The data contract comes first
+
+`ExtractedExperience` (extraction/base.py → models.py) is the single boundary
+through which every experience enters the system: content, entities, topics,
+key_facts, emphasis_signals, importance, confidence, source, timestamp.
+
+Everything downstream — retrieval factors, entity filtering, Phase-3
+consolidation grouping — consumes these fields.  A weak parser does not break
+the system (it only weakens retrieval); a changed contract would.  Treat
+schema changes to it as breaking.
+
+## Episodes are events: append-only, never merged
+
+The original doc proposes a "pattern separation" module that decides merge vs
+keep-separate.  We resolve it structurally instead:
+
+- An episode is an immutable event.  There is no update operation.
+- Encoding identical content twice does not create a second row — it bumps
+  access statistics on the existing one (it is the same event re-witnessed,
+  and the frequency factor benefits).
+- Near-duplicate detection is a SHA-256 over whitespace-normalized content —
+  exact duplicate suppression only, never fuzzy merging.
+- "Similar but different" experiences therefore always stay separate rows
+  (tested: 喜欢 Java / 不喜欢 Java / 重新喜欢 Java coexist).  Contamination
+  at the episodic layer is impossible by construction.
+
+Merge/split decisions belong to the semantic layer (Phase 3), where
+statements are keyed structurally and carry evidence lists — not to a
+fuzzy-merge arbiter over events.
+
+## Retrieval: normalized factors, not raw quantities
+
+Seven factors, each mapped to [0, 1] before weighting:
+
+| factor | normalization | why |
+|---|---|---|
+| semantic | cosine of L2-normalized vectors | already [0,1] |
+| keyword | `1/(1+bm25_rank)` | bm25 ranks are unbounded, lower=better |
+| recency | `0.5 ** (age_days / half_life)` | exponential, half-life configurable |
+| importance | stored [0,1] from parser heuristics | |
+| frequency | `log1p(access) / log1p(cap)` | raw counts would dominate |
+| entity | Jaccard(cue ∩ episode entities), casefolded | |
+| context | Jaccard over topics + context tokens | |
+
+The score is the weighted sum **divided by total weight**, so non-normalized
+weight vectors still produce scores in [0, 1].  Explanations (`reasons`) are
+a free by-product — the factors are computed anyway — so explainability ships
+from day one instead of being retrofitted.
+
+## FTS5 and CJK text
+
+SQLite's unicode61 tokenizer has no CJK segmentation: a run of Han characters
+becomes *one* token, so a two-character partial cue can never match.  We
+store CJK characters space-separated in the FTS document and quote CJK runs
+in MATCH expressions; the query parser then produces single-char token
+phrases that match the indexed adjacency.  Partial cues like 「飞机模组」
+resolve correctly.  Latin text is indexed and queried as normal words.
+
+## LLMs assist; deterministic code owns the pipeline
+
+Following Principle 5 of the design doc:
+
+- the default parser is a zero-dependency heuristic (lexicons, quoted spans,
+  emphasis-signal patterns → importance/confidence);
+- the LLM parser is an optional adapter that degrades to the heuristic on
+  *every* failure mode — encoding must never lose an experience;
+- timestamps, hashing, storage, lifecycle state, and statistics are pure code.
+
+Importance is heuristic-first (explicit remember-requests, corrections,
+preference statements, repetition) because per-episode LLM scoring is a cost
+multiplier the system does not need yet; the LLM parser refines it when
+configured.
+
+## Embeddings
+
+Vectors are L2-normalized at write time (cosine = dot product), stored as
+float32 BLOBs, and searched by brute-force numpy — millisecond latency up to
+~100k episodes, zero extra infrastructure.  The dimension is asserted at
+query time so a provider swap without re-encoding fails loudly instead of
+silently mis-ranking.
+
+## Forgetting is a lifecycle state, not a DELETE
+
+Phase 1 implements active → archived (soft) → restore.  The `forgotten`
+terminal state and the decay scheduler that moves memories into it are Phase
+5; the enum and status column exist now so transitions stay explicit.
+
+## Known limitations (accepted for Phase 1)
+
+- Heuristic entity extraction misses bare lowercase latin tokens (e.g.
+  `nightingale`) unless quoted, capitalized, digit-bearing, or in the
+  lexicon.  The LLM parser closes this gap when configured.
+- Single-writer SQLite; concurrent processes are out of scope until
+  consolidation (Phase 3) runs as a background job — then WAL + retry policy
+  gets revisited.
+- The vector index is an in-memory matrix rebuilt on write invalidation;
+  incremental updates are unnecessary at this scale.
+- No decay scheduling: memories do not weaken over time yet, they only move
+  between explicit states.
+
+## Concurrency model
+
+One connection, one RLock, WAL journal.  Reads and writes are serialized
+through the lock (correctness first; throughput is not a Phase 1 problem at
+human conversation rates).
