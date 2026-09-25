@@ -80,6 +80,11 @@ class MemoryConfig(BaseModel):
     # Supporting episodes needed to rewrite an existing belief (lower than
     # initial consolidation: reconsolidation is reactive and anchored).
     reconsolidation_min_support: int = Field(default=2, ge=1)
+    # ---- Phase 5: decay / forgetting ----
+    # active -> archived when computed memory strength falls below this
+    decay_archive_threshold: float = Field(default=0.25, ge=0.0, le=1.0)
+    # archived -> forgotten after this many days without any touch
+    decay_forget_after_days: float = Field(default=90.0, gt=0.0)
 
     @classmethod
     def from_env(cls, env_file: str | os.PathLike | None = None) -> "MemoryConfig":
@@ -133,4 +138,6 @@ class MemoryConfig(BaseModel):
             consolidation_min_support=int(get("CONSOLIDATION_MIN_SUPPORT", "3")),
             semantic_recall_limit=int(get("SEMANTIC_RECALL_LIMIT", "3")),
             reconsolidation_min_support=int(get("RECONSOLIDATION_MIN_SUPPORT", "2")),
+            decay_archive_threshold=float(get("DECAY_ARCHIVE_THRESHOLD", "0.25")),
+            decay_forget_after_days=float(get("DECAY_FORGET_AFTER_DAYS", "90")),
         )

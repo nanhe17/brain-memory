@@ -285,3 +285,29 @@ class ConsolidationReport(BaseModel):
     @property
     def touched(self) -> list[SemanticMemory]:
         return [*self.created, *self.updated]
+
+
+class DecayReport(BaseModel):
+    """Outcome of one ``decay()`` sweep.
+
+    All transitions are soft: archived memories can be restored, forgotten
+    ones too — nothing is ever physically deleted in this phase.
+    """
+
+    swept_episodes: int = 0
+    swept_semantics: int = 0
+    archived_episode_ids: list[int] = Field(default_factory=list)
+    forgotten_episode_ids: list[int] = Field(default_factory=list)
+    archived_semantic_ids: list[int] = Field(default_factory=list)
+    forgotten_semantic_ids: list[int] = Field(default_factory=list)
+    protected_evidence_count: int = 0
+    dry_run: bool = False
+
+    @property
+    def transitions(self) -> int:
+        return (
+            len(self.archived_episode_ids)
+            + len(self.forgotten_episode_ids)
+            + len(self.archived_semantic_ids)
+            + len(self.forgotten_semantic_ids)
+        )

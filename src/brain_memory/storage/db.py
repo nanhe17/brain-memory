@@ -167,6 +167,10 @@ class Database:
         with self._lock:
             return self._conn.execute("SELECT * FROM episodes WHERE status = 'active' ORDER BY created_at DESC").fetchall()
 
+    def list_archived_episodes(self) -> list[sqlite3.Row]:
+        with self._lock:
+            return self._conn.execute("SELECT * FROM episodes WHERE status = 'archived' ORDER BY created_at DESC").fetchall()
+
     def list_active_embeddings(self) -> list[sqlite3.Row]:
         with self._lock:
             return self._conn.execute("SELECT id, embedding, embedding_dim FROM episodes WHERE status = 'active' AND embedding IS NOT NULL").fetchall()
@@ -229,6 +233,10 @@ class Database:
     def list_active_semantics(self) -> list[sqlite3.Row]:
         with self._lock:
             return self._conn.execute("SELECT * FROM semantic_memories WHERE status = 'active' ORDER BY updated_at DESC").fetchall()
+
+    def list_archived_semantics(self) -> list[sqlite3.Row]:
+        with self._lock:
+            return self._conn.execute("SELECT * FROM semantic_memories WHERE status = 'archived' ORDER BY updated_at DESC").fetchall()
 
     def list_active_semantic_embeddings(self) -> list[sqlite3.Row]:
         with self._lock:

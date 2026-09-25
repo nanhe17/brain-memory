@@ -12,6 +12,8 @@ an experience; commands start with ``/``::
     /consolidate     replay + pattern extraction -> semantic memories
     /facts           list consolidated semantic memories
     /conflicts       list recorded belief conflicts
+    /decay           run the forgetting sweep (archive weak, forget stale)
+    /weak            dry-run: preview what the next decay would archive
     /exit            quit
 
 The database persists across runs — restart and ask about something you said
@@ -65,6 +67,19 @@ def run(db_path: str) -> int:
                     f"v{conflict.old_version}→v{conflict.resolution_version} "
                     f"via {conflict.trigger_kind}: was: {conflict.statement_before}"
                 )
+            continue
+        if line == "/decay" or line == "/weak":
+            report = engine.decay(dry_run=(line == "/weak"))
+            label = "would transition" if report.dry_run else "transitions"
+            print(
+                f"  swept {report.swept_episodes} episodes / "
+                f"{report.swept_semantics} semantics, "
+                f"{label}: archive {len(report.archived_episode_ids)}+"
+                f"{len(report.archived_semantic_ids)}, "
+                f"forget {len(report.forgotten_episode_ids)}+"
+                f"{len(report.forgotten_semantic_ids)}, "
+                f"protected evidence: {report.protected_evidence_count}"
+            )
             continue
         if line == "/exit":
             break

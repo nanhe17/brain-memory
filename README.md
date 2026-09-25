@@ -98,6 +98,34 @@ Design properties:
   `MEMORY_SEMANTIC_RECALL_LIMIT` so knowledge never floods episodic recall.
 - **Evidence preserved**: consolidation never touches the episodes.
 
+## What Phase 5 adds: decay & forgetting
+
+Memory strength decides what survives; time in the archive decides what is
+finally forgotten.  Everything is soft — `restore(id)` works at every stage,
+nothing is ever physically deleted.
+
+```python
+report = engine.decay()              # or decay(dry_run=True) to preview
+print(f"archived {report.archived_episode_ids}, "
+      f"protected evidence: {report.protected_evidence_count}")
+```
+
+- **Strength** (computed on the fly, zero LLM): episodes weight importance
+  0.30 / recency 0.40 / frequency 0.10 / confidence 0.20; semantics weight
+  confidence 0.25 / recency 0.35 / frequency 0.10 / **evidence_support 0.30**
+  (`min(1, evidence/5)`).  "请记住"-style memories carry a high static floor
+  and simply never decay into the archive; knowledge with a long evidence
+  chain is durable, thinly-supported knowledge eventually isn't.
+- **Two mechanisms**: active → archived when strength <
+  `MEMORY_DECAY_ARCHIVE_THRESHOLD` (0.25); archived → forgotten after
+  `MEMORY_DECAY_FORGET_AFTER_DAYS` (90) days untouched — an archived memory
+  cannot be recalled, so its recency anchor freezes and the dwell clock runs.
+- **Evidence protection**: episodes cited by a *living* semantic memory are
+  exempt.  Knowledge that is alive keeps its evidence alive; when the
+  knowledge decays, the evidence is released to age naturally.
+- **Explicit scheduling**: `engine.decay()` from your agent loop or cron;
+  `dry_run=True` previews, and demo has `/decay` and `/weak`.
+
 ## What Phase 4 adds: reconsolidation
 
 Beliefs evolve.  When new evidence challenges a consolidated statement, the
@@ -265,7 +293,7 @@ frequency, CJK-aware FTS indexing, heuristic-first importance scoring.
 
 ```bash
 pip install -e '.[dev]'
-pytest                 # 149 tests
+pytest                 # 163 tests
 ```
 
 Tests cover parsing, embeddings, storage, ranking, retrieval, working memory,
@@ -280,8 +308,8 @@ transport), and the evaluation harness.
 | 2 | eval harness + weight sweep, LLM query expansion, blind rerank fusion, session-entity boost | ✅ |
 | 3 | replay → semantic memory consolidation, versioning, unified recall | ✅ |
 | 4 | reconsolidation: conflict detection, temporal-narrative evolution | ✅ |
-| 5 | decay scheduler, memory strength, archive GC | soft delete done |
-| 6-7 | memory graph (conflicts are pre-shaped edges), inspector UI | planned |
+| 5 | decay scheduler, memory strength, archive GC | ✅ |
+| 6-7 | memory graph (conflicts are pre-shaped edges), inspector UI, long-horizon benchmark | planned |
 
 ## License
 

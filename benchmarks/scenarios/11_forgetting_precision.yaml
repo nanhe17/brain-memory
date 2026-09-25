@@ -1,0 +1,25 @@
+# Forgetting precision: stale small talk decays into the archive while
+# consolidated knowledge survives and keeps its evidence protected.
+name: forgetting_precision
+tags: [forgetting]
+consolidate: true
+decay: true
+episodes:
+  - text: "用户在学习 Java 后端，正在读 Spring 的源码"
+    days_ago: 40
+  - text: "用户喜欢自学 Java 原理，不太看课程"
+    days_ago: 35
+  - text: "用户整理了 Java 知识图谱"
+    days_ago: 30
+  - text: "今天聊了聊天气真不错"
+    days_ago: 90
+  - text: "用户抱怨地铁太挤了"
+    days_ago: 85
+cues:
+  - text: "用户的 Java 学习情况"
+    expect_concepts: ["java"]
+    k: 5
+  - text: "Java 和天气"
+    expect: [0, 1, 2]
+    forbid: [3, 4]
+    k: 5

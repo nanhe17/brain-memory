@@ -135,6 +135,10 @@ class EpisodicStore:
     def archive(self, episode_id: int) -> bool:
         return self._db.set_episode_status(episode_id, MemoryStatus.ARCHIVED.value)
 
+    def forget(self, episode_id: int) -> bool:
+        """Terminal (soft) state: data remains, restore() can still rescue."""
+        return self._db.set_episode_status(episode_id, MemoryStatus.FORGOTTEN.value)
+
     def restore(self, episode_id: int) -> bool:
         return self._db.set_episode_status(episode_id, MemoryStatus.ACTIVE.value)
 

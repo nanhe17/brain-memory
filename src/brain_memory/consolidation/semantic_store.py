@@ -153,6 +153,10 @@ class SemanticStore:
     def archive(self, semantic_id: int) -> bool:
         return self._db.set_semantic_status(semantic_id, MemoryStatus.ARCHIVED.value)
 
+    def forget(self, semantic_id: int) -> bool:
+        """Terminal (soft) state: data remains, restore() can still rescue."""
+        return self._db.set_semantic_status(semantic_id, MemoryStatus.FORGOTTEN.value)
+
     def restore(self, semantic_id: int) -> bool:
         return self._db.set_semantic_status(semantic_id, MemoryStatus.ACTIVE.value)
 

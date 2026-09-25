@@ -29,9 +29,11 @@ from brain_memory.embeddings.openai_compatible import OpenAICompatibleEmbedder
 from brain_memory.extraction.base import ExperienceParser
 from brain_memory.extraction.heuristic import HeuristicExperienceParser
 from brain_memory.extraction.llm import LLMExperienceParser
+from brain_memory.forgetting.decay import DecaySweeper
 from brain_memory.models import (
     ConflictKind,
     ConsolidationReport,
+    DecayReport,
     EncodeResult,
     EngineStats,
     Episode,
@@ -93,6 +95,9 @@ class MemoryEngine:
             embed_fn=self._embed_text,
         )
         self._consolidator.set_llm(self._build_llm_consolidator())
+        self._decay_sweeper = DecaySweeper(
+            self._db, self._store, self._semantic_store, self.config
+        )
         self.working = WorkingMemory()
 
     # -- construction ---------------------------------------------------------
@@ -395,6 +400,19 @@ class MemoryEngine:
         )
         if report.touched:
             self._semantic_index.invalidate()
+        return report
+
+    def decay(self, *, dry_run: bool = False, now: datetime | None = None) -> DecayReport:
+        """Forgetting sweep (doc §14/§30): strength-driven archiving plus
+        dwell-driven forgetting.  Explicit call — schedule it from the agent
+        loop or cron; ``dry_run=True`` previews without touching anything,
+        ``now`` enables time-travel for tests and projections."""
+        report = self._decay_sweeper.sweep(dry_run=dry_run, now=now)
+        if not dry_run and report.transitions:
+            if report.archived_episode_ids or report.forgotten_episode_ids:
+                self._index.invalidate()
+            if report.archived_semantic_ids or report.forgotten_semantic_ids:
+                self._semantic_index.invalidate()
         return report
 
     def find_semantic(self, concept: str) -> SemanticMemory | None:

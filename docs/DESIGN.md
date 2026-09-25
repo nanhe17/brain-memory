@@ -250,6 +250,50 @@ ranking — they are visible through `inspect_semantic` / `conflicts()` /
 `stats().open_conflicts`, and punishment, if any, is the reconsolidation's
 job.
 
+## Phase 5 decisions
+
+### Two mechanisms instead of two thresholds
+
+The doc's strength formula alone cannot drive the full lifecycle: importance
+and confidence form a *static floor* (0.30·importance + 0.20·confidence for
+typical chit-chat ≈ 0.20), so any "forget" threshold below that floor never
+fires, and any above it makes state jumps noisy.  Hence the split:
+**active → archived is strength-driven** (the floor means explicitly
+important memories never decay into the archive — the doc's "strong memories
+persist", for free); **archived → forgotten is dwell-driven** (an archived
+memory cannot be recalled, its recency anchor freezes, and after
+`decay_forget_after_days` it reaches the terminal state).  Each mechanism is
+individually explainable, and transitions are strictly sequential: a memory
+archived in one sweep can only be forgotten by a later one.
+
+### Strength is computed, never stored
+
+No strength column, no write amplification, no staleness — the formula reads
+only already-stored fields and reuses the retrieval layer's normalization
+helpers, so "strong" means the same thing in ranking and in decay.  The
+weights are a calibration unit in code (they move together), not user
+configuration; the two thresholds are configurable because they encode
+policy (how forgetful the deployment wants to be).
+
+### Evidence protection as emergent dynamics
+
+Episodes cited by a living semantic memory are exempt from the sweep.  The
+doc's CSL story then falls out by itself: episodic details age unless they
+keep being used, knowledge with a long evidence chain is durable, thin
+knowledge eventually decays — and when knowledge decays, its evidence is
+*released* to age, instead of being deleted with it.  Emotional salience is
+deliberately absent as a factor: emphasis signals are already folded into
+importance at encode time ("请记住" → +0.35), which is exactly the
+persistence behavior the doc wanted from salience.
+
+### FORGOTTEN is a state, not a deletion
+
+Data stays; `restore()` works from every state; FTS rows remain (status
+filters guard retrieval and consolidation grouping).  Physical deletion is
+out of scope for this project's v1 lifecycle — if storage pressure ever
+demands it, it becomes an explicit, auditable GC job behind the same
+interfaces, not a decay side effect.
+
 ## Known limitations (accepted for Phase 1)
 
 - Heuristic entity extraction misses bare lowercase latin tokens (e.g.

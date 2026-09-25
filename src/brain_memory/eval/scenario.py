@@ -62,6 +62,8 @@ class ScenarioFile(BaseModel):
     # encoded after the first consolidation, then consolidated again —
     # the reconsolidation round (Phase 4)
     later_episodes: list[ScenarioEpisode] = Field(default_factory=list)
+    # run engine.decay() before the cues (tests the forgetting pipeline)
+    decay: bool = False
 
     @model_validator(mode="after")
     def _indexes_in_range(self) -> "ScenarioFile":
@@ -173,6 +175,9 @@ class ScenarioRunner:
                         memory = engine.find_semantic(concept)
                         if memory is not None:
                             concept_to_memory[concept] = memory
+
+            if scenario.decay:
+                engine.decay()
 
             cue_results: list[CueResult] = []
             for cue in scenario.cues:
