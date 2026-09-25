@@ -14,6 +14,9 @@ an experience; commands start with ``/``::
     /conflicts       list recorded belief conflicts
     /decay           run the forgetting sweep (archive weak, forget stale)
     /weak            dry-run: preview what the next decay would archive
+    /graph <ref>     typed one-hop neighborhood (e1 / s1 / c:java), mermaid
+    /link <a> <rel> <b>
+                     assert an explicit relationship between two nodes
     /exit            quit
 
 The database persists across runs — restart and ask about something you said
@@ -80,6 +83,29 @@ def run(db_path: str) -> int:
                 f"{len(report.forgotten_semantic_ids)}, "
                 f"protected evidence: {report.protected_evidence_count}"
             )
+            continue
+        if line.startswith("/graph "):
+            ref = line[len("/graph "):].strip()
+            try:
+                sub = engine.neighborhood(ref)
+            except ValueError as exc:
+                print(f"  {exc}")
+                continue
+            from brain_memory.graph.render import render_mermaid
+
+            print(render_mermaid(sub))
+            continue
+        if line.startswith("/link "):
+            parts = line.split()
+            if len(parts) != 4:
+                print("  usage: /link <src> <relation> <dst>  (e.g. /link e1 related_to e2)")
+                continue
+            try:
+                link = engine.link(parts[1], parts[2], parts[3])
+            except ValueError as exc:
+                print(f"  {exc}")
+                continue
+            print(f"  linked #{link.id}: {parts[1]} -[{link.relation}]-> {parts[3]}")
             continue
         if line == "/exit":
             break

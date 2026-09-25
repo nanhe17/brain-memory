@@ -294,6 +294,54 @@ out of scope for this project's v1 lifecycle — if storage pressure ever
 demands it, it becomes an explicit, auditable GC job behind the same
 interfaces, not a decay side effect.
 
+## Phase 6 decisions
+
+### The graph already existed; the missing piece was the read model
+
+Auditing the stored data before building anything: `episode_tags` is an
+episode↔concept bipartite graph, `evidence_ids` are `derived_from` edges,
+`memory_conflicts` were designed (Phase 4) as pre-shaped `contradicts` edges.
+Materializing all of that into one big edge table would have created three
+sync points and a consistency risk for zero information gain.  Hence:
+**derive on demand, materialize only what cannot be derived** — and the only
+such things are edges an agent or user explicitly asserts (`memory_links`,
+closed relation vocabulary, instance endpoints only).
+
+### Concept nodes are the connective tissue
+
+Without entity/concept pseudo-nodes the graph is a pile of disconnected
+instances; with them, "Java —related— Spring" and "which episodes mention
+Java" are the same traversal.  Concept nodes fold entity and topic kinds by
+value (they were always the same concept — the Phase 3 cursor bug taught
+that), and co-occurrence between concepts is a weighted self-join over the
+tags index rather than a stored edge.
+
+### Expansion is bounded, penalized, and filter-obeying
+
+Graph-aware recall appends one-hop neighbors (siblings via shared entity,
+evidence of recalled knowledge, the concept's consolidated belief) at
+`anchor × expansion_penalty`.  Three invariants: the original top-1 can
+never be displaced (penalty < 1); expanded entries carry provenance reasons
+and the `expanded` flag (a context hit must say it is one); and expansion
+applies the caller's recall filters (source/time/require_entities) — it may
+add context, never leak what was filtered out.
+
+One honest calibration note: with brute-force candidate generation over a
+small store, every memory weakly matches every cue, so expansion only
+*changes results* when the candidate pool is smaller than the store (the
+regime that mimics large deployments).  The expansion tests therefore run
+with `candidate_pool_per_channel=1-2`; the seed scenario verifies no
+regression at default settings.
+
+### Lifecycle is a read-time concern
+
+Edges whose endpoints left the active state are filtered during traversal —
+no cascade deletes, no link-GC.  `restore()` brings relationships back by
+itself, consistent with every other soft transition in this system.  Global
+graph algorithms (PersonalizedPageRank à la HippoRAG) remain a Phase 7
+research extension; one-hop expansion with provenance is what recall can
+explain today.
+
 ## Known limitations (accepted for Phase 1)
 
 - Heuristic entity extraction misses bare lowercase latin tokens (e.g.

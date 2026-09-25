@@ -1,0 +1,18 @@
+# Pattern completion via the graph: a cue naming one part of a project must
+# bring back the whole cluster (shared entities), never the distractor.
+name: pattern_completion
+tags: [graph]
+episodes:
+  - text: "用户完成了 Minecraft 飞机模组的机身建模"
+    days_ago: 5
+  - text: "模组的气动外形调整已经完成"
+    days_ago: 4
+  - text: "用户给飞机模组加了涂装系统"
+    days_ago: 3
+  - text: "用户在研究股票行情分析"
+    days_ago: 1
+cues:
+  - text: "模组的机身设计怎么样了"
+    expect: [0, 1, 2]
+    forbid: [3]
+    k: 3

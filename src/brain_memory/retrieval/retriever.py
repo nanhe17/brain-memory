@@ -50,6 +50,44 @@ def _quote(term: str) -> str:
     return '"' + term.replace('"', '""') + '"'
 
 
+def passes_filters(episode, source: str | None, time_from: datetime | None,
+                   time_to: datetime | None, require_entities: list[str] | None) -> bool:
+    """Shared recall filter — also applied to graph-expanded candidates so
+    expansion can never leak memories the caller filtered out."""
+    if not episode.is_active:
+        return False
+    if source is not None and episode.source != source:
+        return False
+    if time_from is not None and episode.created_at < time_from:
+        return False
+    if time_to is not None and episode.created_at > time_to:
+        return False
+    if require_entities:
+        have = {e.casefold() for e in episode.entities}
+        wanted = {e.casefold() for e in require_entities}
+        if not wanted & have:
+            return False
+    return True
+
+
+def semantic_view(memory):
+    """Episode-shaped read-only view of a semantic memory (see RecallResult)."""
+    return Episode(
+        id=memory.id,
+        content=memory.statement,
+        content_hash=f"semantic-{memory.id}",
+        entities=[memory.concept],
+        topics=[],
+        created_at=memory.updated_at,
+        importance=memory.confidence,
+        confidence=memory.confidence,
+        access_count=memory.access_count,
+        last_accessed=memory.last_accessed,
+        status=memory.status,
+        metadata={"kind": "semantic", "concept": memory.concept},
+    )
+
+
 class Retriever:
     def __init__(
         self,
@@ -147,7 +185,7 @@ class Retriever:
         episodes = [
             episode
             for episode in episodes
-            if self._passes_filters(episode, source, time_from, time_to, require_entities)
+            if passes_filters(episode, source, time_from, time_to, require_entities)
         ]
         results: list[RecallResult] = []
         for episode in episodes:
@@ -176,24 +214,6 @@ class Retriever:
 
     # -- semantic channel ------------------------------------------------------------
 
-    @staticmethod
-    def _semantic_view(memory) -> Episode:
-        """Episode-shaped read-only view of a semantic memory (see RecallResult)."""
-        return Episode(
-            id=memory.id,
-            content=memory.statement,
-            content_hash=f"semantic-{memory.id}",
-            entities=[memory.concept],
-            topics=[],
-            created_at=memory.updated_at,
-            importance=memory.confidence,
-            confidence=memory.confidence,
-            access_count=memory.access_count,
-            last_accessed=memory.last_accessed,
-            status=memory.status,
-            metadata={"kind": "semantic", "concept": memory.concept},
-        )
-
     def _rank_semantic(
         self,
         cue_variants: list[ExtractedExperience],
@@ -221,7 +241,7 @@ class Retriever:
         for memory in memories:
             if not memory.status.value == "active":
                 continue
-            view = self._semantic_view(memory)
+            view = semantic_view(memory)
             semantic_sim, bm25_rank = candidates[memory.id]
             keyword = ranking.normalize_bm25(bm25_rank) if bm25_rank < math.inf else 0.0
             factors = ranking.compute_factors(
@@ -263,25 +283,3 @@ class Retriever:
             kept.append(result)
         return kept
 
-    @staticmethod
-    def _passes_filters(
-        episode,  # Episode
-        source: str | None,
-        time_from: datetime | None,
-        time_to: datetime | None,
-        require_entities: list[str] | None,
-    ) -> bool:
-        if not episode.is_active:
-            return False
-        if source is not None and episode.source != source:
-            return False
-        if time_from is not None and episode.created_at < time_from:
-            return False
-        if time_to is not None and episode.created_at > time_to:
-            return False
-        if require_entities:
-            have = {e.casefold() for e in episode.entities}
-            wanted = {e.casefold() for e in require_entities}
-            if not wanted & have:
-                return False
-        return True

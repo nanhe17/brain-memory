@@ -30,6 +30,8 @@ from brain_memory.extraction.base import ExperienceParser
 from brain_memory.extraction.heuristic import HeuristicExperienceParser
 from brain_memory.extraction.llm import LLMExperienceParser
 from brain_memory.forgetting.decay import DecaySweeper
+from brain_memory.graph.links import LinkStore
+from brain_memory.graph.view import GraphView, parse_ref
 from brain_memory.models import (
     ConflictKind,
     ConsolidationReport,
@@ -37,12 +39,18 @@ from brain_memory.models import (
     EncodeResult,
     EngineStats,
     Episode,
+    EXPLICIT_RELATIONS,
     ExtractedExperience,
+    FactorScores,
+    GraphSubgraph,
     MemoryConflict,
+    MemoryLink,
     MemoryStatus,
+    NodeKind,
     RecallResult,
     SemanticMemory,
 )
+from brain_memory.retrieval.retriever import passes_filters, semantic_view
 from brain_memory.query.expander import LLMQueryExpander
 from brain_memory.retrieval.reranker import LLMReranker
 from brain_memory.retrieval.retriever import Retriever
@@ -75,6 +83,15 @@ class MemoryEngine:
         self._semantic_store = SemanticStore(self._db)
         self._semantic_index = VectorIndex(self._db, self._db.list_active_semantic_embeddings)
         self._conflict_store = ConflictStore(self._db)
+        self._link_store = LinkStore(self._db)
+        self._graph = GraphView(
+            self._db,
+            self._store,
+            self._semantic_store,
+            self._conflict_store,
+            self._link_store,
+            episodic_index=self._index,
+        )
         self._embedder = self._build_embedder()
         self._parser = self._build_parser()
         self._retriever = Retriever(
@@ -257,6 +274,14 @@ class MemoryEngine:
         )
         if self._reranker is not None and len(results) >= 2:
             results = self._fuse_rerank(cue, results)
+        if self.config.recall_expansion and results:
+            results = self._expand_recall(
+                results,
+                source=source,
+                time_from=expanded_from or time_from,
+                time_to=expanded_to or time_to,
+                require_entities=require_entities,
+            )
         results = results[:final_k]
         if touch and results:
             episodic_ids = [r.episode.id for r in results if not r.is_semantic]
@@ -349,6 +374,153 @@ class MemoryEngine:
         if parsed.tzinfo is None:
             parsed = parsed.replace(tzinfo=timezone.utc)
         return parsed
+
+    # -- graph-aware recall (pattern completion, doc §10) --------------------------
+
+    def _expand_recall(
+        self,
+        results: list[RecallResult],
+        *,
+        source: str | None,
+        time_from: datetime | None,
+        time_to: datetime | None,
+        require_entities: list[str] | None,
+    ) -> list[RecallResult]:
+        """One-hop graph expansion behind a penalty.
+
+        Expanded entries score `anchor * expansion_penalty`, so the original
+        top hit can never be displaced; they carry their provenance in
+        reasons and the `expanded` flag.  Expansion obeys the same recall
+        filters as direct matches — it may add context, never leak what the
+        caller filtered out.
+        """
+        budget = self.config.expansion_limit
+        if budget <= 0:
+            return results
+        penalty = self.config.expansion_penalty
+        seen = {("s" if r.is_semantic else "e", r.episode.id) for r in results}
+
+        def passes(episode: Episode) -> bool:
+            return passes_filters(episode, source, time_from, time_to, require_entities)
+
+        expanded: list[RecallResult] = []
+        for anchor in results[:3]:
+            if budget <= 0:
+                break
+            if anchor.is_semantic:
+                memory = anchor.semantic
+                for episode in self._store.get_many(memory.evidence_ids):
+                    if budget <= 0 or not episode.is_active or not passes(episode):
+                        continue
+                    if ("e", episode.id) in seen:
+                        continue
+                    seen.add(("e", episode.id))
+                    budget -= 1
+                    expanded.append(RecallResult(
+                        episode=episode,
+                        score=anchor.score * penalty,
+                        factors=FactorScores(entity=1.0),
+                        reasons=[f"graph: evidence of S-{memory.id} ({memory.concept})"],
+                        expanded=True,
+                    ))
+                continue
+
+            concepts = list(dict.fromkeys(
+                e.casefold() for e in [*anchor.episode.entities, *anchor.episode.topics]
+            ))[:3]
+            for concept in concepts:
+                if budget <= 0:
+                    break
+                # sibling episodes sharing the concept
+                ids = set(self._store.ids_for_entities([concept]))
+                ids |= set(self._store.ids_for_topics([concept]))
+                siblings = [
+                    e for e in self._store.get_many(sorted(ids))
+                    if e.is_active and ("e", e.id) not in seen and passes(e)
+                ]
+                for episode in siblings[:2]:
+                    seen.add(("e", episode.id))
+                    budget -= 1
+                    expanded.append(RecallResult(
+                        episode=episode,
+                        score=anchor.score * penalty,
+                        factors=FactorScores(entity=1.0),
+                        reasons=[f"graph: shares entity '{concept}' with #{anchor.episode.id}"],
+                        expanded=True,
+                    ))
+                # the concept's consolidated knowledge, if not already recalled
+                memory = self._semantic_store.get_by_concept(concept)
+                if (
+                    memory is not None
+                    and memory.status is MemoryStatus.ACTIVE
+                    and ("s", memory.id) not in seen
+                ):
+                    seen.add(("s", memory.id))
+                    budget -= 1
+                    expanded.append(RecallResult(
+                        episode=semantic_view(memory),
+                        kind="semantic",
+                        semantic=memory,
+                        score=anchor.score * penalty,
+                        factors=FactorScores(entity=1.0),
+                        reasons=[f"graph: knowledge about '{concept}' (from #{anchor.episode.id})"],
+                        expanded=True,
+                    ))
+
+        merged = [*results, *expanded]
+        merged.sort(key=lambda r: -r.score)
+        return merged
+
+    # -- graph API -------------------------------------------------------------------
+
+    def neighborhood(self, ref: str, *, include_similar: bool = False,
+                     max_per_kind: int = 6) -> GraphSubgraph:
+        """Typed one-hop neighborhood of 'e<id>' / 's<id>' / 'c:<concept>'."""
+        return self._graph.neighborhood(
+            ref, include_similar=include_similar, max_per_kind=max_per_kind
+        )
+
+    def link(self, source_ref: str, relation: str, target_ref: str, *,
+             weight: float = 1.0, created_by: str = "agent",
+             metadata: dict | None = None) -> MemoryLink:
+        """Assert an explicit relationship between two instance nodes."""
+        if relation not in EXPLICIT_RELATIONS:
+            raise ValueError(
+                f"relation must be one of {EXPLICIT_RELATIONS}, got {relation!r}"
+            )
+        source_kind, source_id, source_concept = parse_ref(source_ref)
+        target_kind, target_id, target_concept = parse_ref(target_ref)
+        if source_kind is NodeKind.CONCEPT or target_kind is NodeKind.CONCEPT:
+            raise ValueError("explicit links connect instances, not concepts")
+        for kind, node_id in ((source_kind, source_id), (target_kind, target_id)):
+            node = (
+                self._store.get(node_id)
+                if kind is NodeKind.EPISODE
+                else self._semantic_store.get(node_id)
+            )
+            if node is None:
+                raise ValueError(f"{kind.value} {node_id} not found")
+            if not node.is_active:
+                raise ValueError(f"{kind.value} {node_id} is not active")
+        if (source_kind, source_id) == (target_kind, target_id):
+            raise ValueError("cannot link a node to itself")
+        return self._link_store.create(
+            source_kind=source_kind,
+            source_id=source_id,
+            target_kind=target_kind,
+            target_id=target_id,
+            relation=relation,
+            weight=weight,
+            created_by=created_by,
+            metadata=metadata,
+        )
+
+    def unlink(self, link_id: int) -> bool:
+        return self._link_store.delete(link_id)
+
+    def related_concepts(self, concept: str, *, limit: int = 5) -> list[tuple[str, int]]:
+        """Concepts co-occurring with *concept* across active episodes."""
+        return self._graph.related_concepts(concept, limit=limit)
 
     def inspect(self, memory_id: int) -> dict | None:
         """Full memory details plus the most related active memories."""

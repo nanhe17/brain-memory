@@ -85,6 +85,11 @@ class MemoryConfig(BaseModel):
     decay_archive_threshold: float = Field(default=0.25, ge=0.0, le=1.0)
     # archived -> forgotten after this many days without any touch
     decay_forget_after_days: float = Field(default=90.0, gt=0.0)
+    # ---- Phase 6: graph-aware recall (pattern completion) ----
+    # expand recall hits along graph edges (deterministic, capped, penalized)
+    recall_expansion: bool = True
+    expansion_penalty: float = Field(default=0.6, ge=0.0, le=1.0)
+    expansion_limit: int = Field(default=4, ge=0)
 
     @classmethod
     def from_env(cls, env_file: str | os.PathLike | None = None) -> "MemoryConfig":
@@ -140,4 +145,7 @@ class MemoryConfig(BaseModel):
             reconsolidation_min_support=int(get("RECONSOLIDATION_MIN_SUPPORT", "2")),
             decay_archive_threshold=float(get("DECAY_ARCHIVE_THRESHOLD", "0.25")),
             decay_forget_after_days=float(get("DECAY_FORGET_AFTER_DAYS", "90")),
+            recall_expansion=get("RECALL_EXPANSION", "on").strip().lower() == "on",
+            expansion_penalty=float(get("EXPANSION_PENALTY", "0.6")),
+            expansion_limit=int(get("EXPANSION_LIMIT", "4")),
         )

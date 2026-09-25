@@ -126,6 +126,37 @@ print(f"archived {report.archived_episode_ids}, "
 - **Explicit scheduling**: `engine.decay()` from your agent loop or cron;
   `dry_run=True` previews, and demo has `/decay` and `/weak`.
 
+## What Phase 6 adds: memory graph & pattern completion
+
+Most of the graph already existed as relations — `episode_tags` is an
+episode↔concept bipartite graph, evidence chains are `derived_from` edges,
+conflict records are pre-shaped `contradicts` edges.  Phase 6 unifies them
+into a typed read model and puts them to work in recall:
+
+```python
+sub = engine.neighborhood("e1")          # or "s1", "c:java"
+for edge in sub.edges:
+    print(f"{edge.source} -[{edge.kind.value} ({edge.provenance})]-> {edge.target}")
+
+engine.link("e1", "caused_by", "e3")     # explicit edges (closed vocabulary)
+engine.related_concepts("java")          # co-occurrence: [('spring', 2), ...]
+```
+
+- **Edge kinds**: `mentions` (episode→concept), `derived_from` (semantic→
+  evidence episode), `contradicts` (semantic→challenging episode),
+  `co_occurs_with` (concept↔concept, weight = shared episodes), `similar_to`
+  (vector kNN, on demand), plus explicit `related_to/caused_by/similar_to/
+  part_of` from the `memory_links` table.
+- **Graph-aware recall (pattern completion, doc §10)**: recall hits are
+  expanded one hop — siblings sharing an entity, evidence of recalled
+  knowledge, the concept's consolidated belief — appended behind a penalty
+  (`anchor × 0.6`) with provenance reasons and an `expanded` flag.  The
+  original top-1 can never be displaced; expansion obeys the same recall
+  filters; `MEMORY_RECALL_EXPANSION=off` disables it.
+- **Lifecycle**: endpoints that left the active state hide their edges at
+  read time — no cascade deletes, `restore()` brings relationships back by
+  itself.
+
 ## What Phase 4 adds: reconsolidation
 
 Beliefs evolve.  When new evidence challenges a consolidated statement, the
@@ -293,7 +324,7 @@ frequency, CJK-aware FTS indexing, heuristic-first importance scoring.
 
 ```bash
 pip install -e '.[dev]'
-pytest                 # 163 tests
+pytest                 # 180 tests
 ```
 
 Tests cover parsing, embeddings, storage, ranking, retrieval, working memory,
@@ -309,7 +340,8 @@ transport), and the evaluation harness.
 | 3 | replay → semantic memory consolidation, versioning, unified recall | ✅ |
 | 4 | reconsolidation: conflict detection, temporal-narrative evolution | ✅ |
 | 5 | decay scheduler, memory strength, archive GC | ✅ |
-| 6-7 | memory graph (conflicts are pre-shaped edges), inspector UI, long-horizon benchmark | planned |
+| 6 | memory graph read model, explicit links, graph-aware recall | ✅ |
+| 7 | inspector UI, long-horizon benchmark, global graph algorithms (PPR) | planned |
 
 ## License
 

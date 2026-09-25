@@ -81,6 +81,10 @@ class Database:
                 self._apply_migration_3()
                 self._conn.execute("INSERT INTO schema_version(version) VALUES (?)", (3,))
                 self._conn.commit()
+            if current < 4:
+                self._apply_migration_4()
+                self._conn.execute("INSERT INTO schema_version(version) VALUES (?)", (4,))
+                self._conn.commit()
 
     def _apply_migration_1(self) -> None:
         self._conn.execute("CREATE TABLE IF NOT EXISTS episodes (id INTEGER PRIMARY KEY, content TEXT NOT NULL, content_hash TEXT NOT NULL, entities TEXT NOT NULL, topics TEXT NOT NULL, key_facts TEXT NOT NULL, emphasis TEXT NOT NULL, context TEXT, source TEXT NOT NULL, created_at TEXT NOT NULL, embedding BLOB, embedding_dim INTEGER NOT NULL, importance REAL NOT NULL, confidence REAL NOT NULL, access_count INTEGER NOT NULL, last_accessed TEXT, status TEXT NOT NULL, metadata TEXT NOT NULL)")
@@ -105,6 +109,11 @@ class Database:
     def _apply_migration_3(self) -> None:
         self._conn.execute("CREATE TABLE IF NOT EXISTS memory_conflicts (id INTEGER PRIMARY KEY, semantic_id INTEGER NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, old_version INTEGER NOT NULL, statement_before TEXT, trigger_episode_id INTEGER, trigger_kind TEXT NOT NULL, detected_at TEXT NOT NULL, resolution_version INTEGER, resolved_at TEXT, metadata TEXT NOT NULL)")
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_conflicts_semantic ON memory_conflicts(semantic_id, status)")
+
+    def _apply_migration_4(self) -> None:
+        self._conn.execute("CREATE TABLE IF NOT EXISTS memory_links (id INTEGER PRIMARY KEY, source_kind TEXT NOT NULL, source_id INTEGER NOT NULL, target_kind TEXT NOT NULL, target_id INTEGER NOT NULL, relation TEXT NOT NULL, weight REAL NOT NULL, created_by TEXT NOT NULL, created_at TEXT NOT NULL, metadata TEXT NOT NULL)")
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_links_source ON memory_links(source_kind, source_id)")
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_links_target ON memory_links(target_kind, target_id)")
 
     # -- json / datetime helpers --------------------------------------------
 
@@ -374,6 +383,40 @@ class Database:
     def get_conflict(self, conflict_id: int) -> sqlite3.Row | None:
         with self._lock:
             return self._conn.execute("SELECT * FROM memory_conflicts WHERE id = ?", (conflict_id,)).fetchone()
+
+    # -- explicit memory links (graph) -------------------------------------------
+
+    def insert_link(self, *, source_kind: str, source_id: int, target_kind: str,
+                    target_id: int, relation: str, weight: float,
+                    created_by: str, created_at: str, metadata: dict[str, Any]) -> int:
+        with self._lock:
+            cur = self._conn.execute("INSERT INTO memory_links (source_kind, source_id, target_kind, target_id, relation, weight, created_by, created_at, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", (source_kind, source_id, target_kind, target_id, relation, weight, created_by, created_at, self.dumps(metadata)))
+            self._conn.commit()
+            return int(cur.lastrowid)
+
+    def get_link(self, link_id: int) -> sqlite3.Row | None:
+        with self._lock:
+            return self._conn.execute("SELECT * FROM memory_links WHERE id = ?", (link_id,)).fetchone()
+
+    def delete_link(self, link_id: int) -> bool:
+        with self._lock:
+            cur = self._conn.execute("DELETE FROM memory_links WHERE id = ?", (link_id,))
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def links_for_source(self, kind: str, node_id: int) -> list[sqlite3.Row]:
+        with self._lock:
+            return self._conn.execute("SELECT * FROM memory_links WHERE source_kind = ? AND source_id = ?", (kind, node_id)).fetchall()
+
+    def links_for_target(self, kind: str, node_id: int) -> list[sqlite3.Row]:
+        with self._lock:
+            return self._conn.execute("SELECT * FROM memory_links WHERE target_kind = ? AND target_id = ?", (kind, node_id)).fetchall()
+
+    def concept_co_occurrence(self, value: str, limit: int) -> list[sqlite3.Row]:
+        """Concepts co-occurring with *value* across active episodes
+        (entity and topic kinds folded by value)."""
+        with self._lock:
+            return self._conn.execute("SELECT a.value AS other, COUNT(*) AS n FROM episode_tags a JOIN episode_tags b ON a.episode_id = b.episode_id JOIN episodes e ON e.id = a.episode_id WHERE b.value = ? AND a.value != ? AND e.status = 'active' GROUP BY a.value ORDER BY n DESC, a.value LIMIT ?", (value, value, limit)).fetchall()
 
     # -- grouping ---------------------------------------------------------------------
 

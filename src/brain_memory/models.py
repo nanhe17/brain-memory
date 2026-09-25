@@ -208,6 +208,66 @@ class PatternProposal(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class NodeKind(str, Enum):
+    EPISODE = "episode"
+    SEMANTIC = "semantic"
+    CONCEPT = "concept"  # entity/topic pseudo-node — the graph's connective tissue
+
+
+class EdgeKind(str, Enum):
+    MENTIONS = "mentions"                    # episode -> concept (tags)
+    DERIVED_FROM = "derived_from"            # semantic -> episode (evidence)
+    CONTRADICTS = "contradicts"              # semantic -> episode (conflict record)
+    CO_OCCURS_WITH = "co_occurs_with"        # concept <-> concept (shared episodes)
+    SIMILAR_TO = "similar_to"                # episode <-> episode (vector kNN)
+    RELATED_TO = "related_to"                # explicit (memory_links)
+    CAUSED_BY = "caused_by"                  # explicit (memory_links)
+    PART_OF = "part_of"                      # explicit (memory_links)
+
+
+EXPLICIT_RELATIONS = ("related_to", "caused_by", "similar_to", "part_of")
+
+
+class GraphNode(BaseModel):
+    ref: str  # "e12" | "s3" | "c:java"
+    kind: NodeKind
+    id: int | None = None  # None for concept nodes
+    label: str
+    status: MemoryStatus | None = None
+    detail: str = ""  # statement / truncated content
+
+
+class GraphEdge(BaseModel):
+    source: str
+    target: str
+    kind: EdgeKind
+    weight: float = 1.0
+    provenance: str  # tags | evidence | conflict | co_occurrence | vector | explicit
+
+
+class GraphSubgraph(BaseModel):
+    center: str
+    nodes: list[GraphNode] = Field(default_factory=list)
+    edges: list[GraphEdge] = Field(default_factory=list)
+
+
+class MemoryLink(BaseModel):
+    """An explicitly asserted relationship (agent or user) between two
+    instance nodes.  Derived relations (mentions/evidence/conflicts) are NOT
+    stored here — they are read models over their own tables."""
+
+    id: int
+    source_kind: NodeKind
+    source_id: int
+    target_kind: NodeKind
+    target_id: int
+    relation: str  # closed vocabulary: related_to | caused_by | similar_to | part_of
+    weight: float = 1.0
+    created_by: str = "agent"
+    created_at: datetime
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class RecallResult(BaseModel):
     """A retrieved memory plus an explanation of why it was recalled.
 
@@ -227,6 +287,8 @@ class RecallResult(BaseModel):
     reasons: list[str] = Field(default_factory=list)
     # Set when the blind LLM reranker contributed to the final score.
     llm_relevance: float | None = None
+    # Set when this hit entered via graph expansion rather than direct matching.
+    expanded: bool = False
 
     @property
     def content(self) -> str:
