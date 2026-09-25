@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
@@ -32,6 +32,21 @@ class MemoryStatus(str, Enum):
     ACTIVE = "active"
     ARCHIVED = "archived"
     FORGOTTEN = "forgotten"
+
+
+class SemanticKind(str, Enum):
+    """What kind of knowledge a semantic memory states.
+
+    CO_OCCURRENCE is the deterministic path's honest output ("X shows up in N
+    memories"); FACT / PREFERENCE / SCHEMA / GENERALIZATION are only produced
+    by the LLM consolidator, which can actually judge meaning.
+    """
+
+    FACT = "fact"
+    PREFERENCE = "preference"
+    CO_OCCURRENCE = "co_occurrence"
+    SCHEMA = "schema"
+    GENERALIZATION = "generalization"
 
 
 class ExtractedExperience(BaseModel):
@@ -93,15 +108,87 @@ class FactorScores(BaseModel):
         return self.model_dump()
 
 
+class SemanticMemory(BaseModel):
+    """Consolidated knowledge distilled from multiple episodes.
+
+    Identity is structural: one row per ``concept`` (the normalized group key),
+    never duplicated by textual similarity.  Every state change appends a
+    :class:`MemoryVersion` row, so "why do you believe this" is always
+    answerable from evidence + history.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    id: int
+    concept: str
+    kind: SemanticKind = SemanticKind.CO_OCCURRENCE
+    statement: str
+    confidence: float
+    evidence_ids: list[int] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+    version: int = 1
+    status: MemoryStatus = MemoryStatus.ACTIVE
+    access_count: int = 0
+    last_accessed: datetime | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    embedding: np.ndarray | None = Field(default=None, repr=False, exclude=True)
+
+
+class MemoryVersion(BaseModel):
+    """One historical state of a semantic memory (full version trail)."""
+
+    id: int
+    semantic_id: int
+    version: int
+    statement: str
+    confidence: float
+    evidence_ids: list[int] = Field(default_factory=list)
+    created_at: datetime
+    change_reason: str
+
+
+class PatternProposal(BaseModel):
+    """A consolidator's candidate knowledge statement for one concept group."""
+
+    concept: str
+    statement: str
+    kind: SemanticKind = SemanticKind.CO_OCCURRENCE
+    confidence: float = Field(ge=0.0, le=1.0)
+    supporting_indexes: list[int] = Field(default_factory=list)
+
+
 class RecallResult(BaseModel):
-    """A retrieved memory plus an explanation of why it was recalled."""
+    """A retrieved memory plus an explanation of why it was recalled.
+
+    ``kind="semantic"`` hits carry the :class:`SemanticMemory` in ``semantic``
+    and a read-only *view* of it in ``episode`` (content=statement,
+    created_at=updated_at, importance=confidence, entities=[concept]) so that
+    consumers (reranker, prompt block, API) can treat every hit uniformly.
+    The view's id lives in the semantic id space — never feed it back into
+    episode APIs.
+    """
 
     episode: Episode
+    kind: Literal["episodic", "semantic"] = "episodic"
+    semantic: SemanticMemory | None = None
     score: float
     factors: FactorScores
     reasons: list[str] = Field(default_factory=list)
     # Set when the blind LLM reranker contributed to the final score.
     llm_relevance: float | None = None
+
+    @property
+    def content(self) -> str:
+        return self.episode.content
+
+    @property
+    def memory_id(self) -> int:
+        return self.episode.id
+
+    @property
+    def is_semantic(self) -> bool:
+        return self.kind == "semantic"
 
 
 class EncodeResult(BaseModel):
@@ -129,3 +216,17 @@ class EngineStats(BaseModel):
     avg_importance: float
     oldest_created_at: datetime | None = None
     newest_created_at: datetime | None = None
+    semantic_memories: int = 0
+
+
+class ConsolidationReport(BaseModel):
+    """Outcome of one ``consolidate()`` run."""
+
+    groups_considered: int = 0
+    created: list[SemanticMemory] = Field(default_factory=list)
+    updated: list[SemanticMemory] = Field(default_factory=list)
+    skipped: list[str] = Field(default_factory=list)  # "group_key: reason"
+
+    @property
+    def touched(self) -> list[SemanticMemory]:
+        return [*self.created, *self.updated]

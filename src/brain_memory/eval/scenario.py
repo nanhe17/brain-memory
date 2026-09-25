@@ -28,8 +28,11 @@ class ScenarioEpisode(BaseModel):
 
 class ScenarioCue(BaseModel):
     text: str = Field(min_length=1)
-    expect: list[int] = Field(min_length=1)
+    expect: list[int] = Field(default_factory=list)
     forbid: list[int] = Field(default_factory=list)
+    # semantic memories asserted by concept name (requires consolidate: true
+    # or a semantic memory created by an earlier cue run)
+    expect_concepts: list[str] = Field(default_factory=list)
     k: int | None = Field(default=None, ge=1)
 
     @field_validator("expect", "forbid")
@@ -39,12 +42,20 @@ class ScenarioCue(BaseModel):
             raise ValueError("episode indexes must be >= 0")
         return value
 
+    @model_validator(mode="after")
+    def _expects_something(self) -> "ScenarioCue":
+        if not self.expect and not self.expect_concepts:
+            raise ValueError("cue must set expect (episode indexes) or expect_concepts")
+        return self
+
 
 class ScenarioFile(BaseModel):
     name: str = Field(min_length=1)
     tags: list[str] = Field(default_factory=list)
     episodes: list[ScenarioEpisode] = Field(min_length=1)
     cues: list[ScenarioCue] = Field(min_length=1)
+    # run engine.consolidate() after encoding (tests the replay pipeline)
+    consolidate: bool = False
 
     @model_validator(mode="after")
     def _indexes_in_range(self) -> "ScenarioFile":
@@ -75,9 +86,9 @@ def load_scenarios(directory: str | Path) -> list[ScenarioFile]:
 class CueResult(BaseModel):
     cue: str
     k: int
-    ranked_ids: list[int]
-    expected_ids: list[int]
-    forbidden_ids: list[int]
+    ranked_ids: list[str]
+    expected_ids: list[str]
+    forbidden_ids: list[str]
     recall: float
     mrr: float
     precision: float
@@ -129,13 +140,32 @@ class ScenarioRunner:
                 )
                 id_by_index[index] = result.episode.id
 
+            concept_to_tag: dict[str, str] = {}
+            if scenario.consolidate:
+                engine.consolidate(max_groups=25, max_episodes_per_group=50)
+                concepts = {
+                    concept for cue in scenario.cues for concept in cue.expect_concepts
+                }
+                for concept in concepts:
+                    memory = engine.find_semantic(concept)
+                    if memory is not None:
+                        concept_to_tag[concept] = f"s{memory.id}"
+
             cue_results: list[CueResult] = []
             for cue in scenario.cues:
                 k = cue.k or self._default_k
                 hits = engine.recall(cue.text, k=k)
-                ranked = [hit.episode.id for hit in hits]
-                expected = {id_by_index[i] for i in cue.expect}
-                forbidden = {id_by_index[i] for i in cue.forbid}
+                ranked = [
+                    f"s{hit.semantic.id}" if hit.is_semantic else f"e{hit.episode.id}"
+                    for hit in hits
+                ]
+                expected = {f"e{id_by_index[i]}" for i in cue.expect}
+                expected |= {
+                    concept_to_tag[concept]
+                    for concept in cue.expect_concepts
+                    if concept in concept_to_tag
+                }
+                forbidden = {f"e{id_by_index[i]}" for i in cue.forbid}
                 cue_results.append(
                     CueResult(
                         cue=cue.text,

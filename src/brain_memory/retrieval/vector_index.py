@@ -15,8 +15,16 @@ from brain_memory.storage.db import Database
 
 
 class VectorIndex:
-    def __init__(self, db: Database) -> None:
+    """Brute-force index over one embedding source.
+
+    ``rows_provider`` returns ``(id, embedding, embedding_dim)`` rows — the
+    episodic store's active embeddings by default; the semantic store passes
+    its own loader so both id spaces get an independent index.
+    """
+
+    def __init__(self, db: Database, rows_provider=None) -> None:
         self._db = db
+        self._rows_provider = rows_provider or db.list_active_embeddings
         self._ids: np.ndarray | None = None
         self._matrix: np.ndarray | None = None
         self._dirty = True
@@ -25,7 +33,7 @@ class VectorIndex:
         self._dirty = True
 
     def _load(self) -> None:
-        rows = self._db.list_active_embeddings()
+        rows = self._rows_provider()
         if rows:
             ids = np.fromiter((row["id"] for row in rows), dtype=np.int64, count=len(rows))
             dim = rows[0]["embedding_dim"]

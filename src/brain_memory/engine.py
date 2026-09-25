@@ -18,6 +18,9 @@ from types import TracebackType
 import numpy as np
 
 from brain_memory.config import MemoryConfig
+from brain_memory.consolidation.consolidator import Consolidator
+from brain_memory.consolidation.llm import LLMConsolidator
+from brain_memory.consolidation.semantic_store import SemanticStore
 from brain_memory.episodic.store import EpisodicStore
 from brain_memory.embeddings.base import EmbeddingProvider
 from brain_memory.embeddings.hash_embedder import HashEmbedder
@@ -26,12 +29,14 @@ from brain_memory.extraction.base import ExperienceParser
 from brain_memory.extraction.heuristic import HeuristicExperienceParser
 from brain_memory.extraction.llm import LLMExperienceParser
 from brain_memory.models import (
+    ConsolidationReport,
     EncodeResult,
     EngineStats,
     Episode,
     ExtractedExperience,
     MemoryStatus,
     RecallResult,
+    SemanticMemory,
 )
 from brain_memory.query.expander import LLMQueryExpander
 from brain_memory.retrieval.reranker import LLMReranker
@@ -62,11 +67,27 @@ class MemoryEngine:
         self._db = Database(self.config.db_path)
         self._store = EpisodicStore(self._db)
         self._index = VectorIndex(self._db)
+        self._semantic_store = SemanticStore(self._db)
+        self._semantic_index = VectorIndex(self._db, self._db.list_active_semantic_embeddings)
         self._embedder = self._build_embedder()
         self._parser = self._build_parser()
-        self._retriever = Retriever(self._store, self._index, self.config)
+        self._retriever = Retriever(
+            self._store,
+            self._index,
+            self.config,
+            semantic_store=self._semantic_store,
+            semantic_index=self._semantic_index,
+        )
         self._expander = self._build_expander()
         self._reranker = self._build_reranker()
+        self._consolidator = Consolidator(
+            self._db,
+            self._store,
+            self._semantic_store,
+            self.config,
+            embed_fn=self._embed_text,
+        )
+        self._consolidator.set_llm(self._build_llm_consolidator())
         self.working = WorkingMemory()
 
     # -- construction ---------------------------------------------------------
@@ -110,6 +131,15 @@ class MemoryEngine:
                 api_key=self.config.llm_api_key,
                 model=self.config.llm_model,
                 timeout=self.config.rerank_timeout,
+            )
+        return None
+
+    def _build_llm_consolidator(self) -> LLMConsolidator | None:
+        if self._llm_ready():
+            return LLMConsolidator(
+                base_url=self.config.llm_base_url,
+                api_key=self.config.llm_api_key,
+                model=self.config.llm_model,
             )
         return None
 
@@ -176,7 +206,12 @@ class MemoryEngine:
             results = self._fuse_rerank(cue, results)
         results = results[:final_k]
         if touch and results:
-            self._store.touch([result.episode.id for result in results])
+            episodic_ids = [r.episode.id for r in results if not r.is_semantic]
+            semantic_ids = [r.semantic.id for r in results if r.is_semantic and r.semantic]
+            if episodic_ids:
+                self._store.touch(episodic_ids)
+            if semantic_ids:
+                self._semantic_store.touch(semantic_ids)
         self.working.remember_recall(results)
         return results
 
@@ -281,6 +316,49 @@ class MemoryEngine:
             "related": related,
         }
 
+    def inspect_semantic(self, semantic_id: int) -> dict | None:
+        """Answer "why do you believe this": the statement, its evidence
+        episodes, and the full version trail (doc §39, principle 6)."""
+        memory = self._semantic_store.get(semantic_id)
+        if memory is None:
+            return None
+        return {
+            "semantic": memory,
+            "evidence": self._store.get_many(memory.evidence_ids),
+            "versions": self._semantic_store.versions(semantic_id),
+        }
+
+    def find_semantic(self, concept: str) -> SemanticMemory | None:
+        """Look up a semantic memory by its structural concept key."""
+        return self._semantic_store.get_by_concept(concept)
+
+    def list_semantics(self) -> list[SemanticMemory]:
+        """All active semantic memories (newest update first)."""
+        return self._semantic_store.list_active()
+
+    def consolidate(
+        self,
+        *,
+        max_groups: int = 5,
+        max_episodes_per_group: int = 20,
+        min_support: int | None = None,
+    ) -> ConsolidationReport:
+        """Replay + pattern extraction -> semantic memories (doc §11/§23).
+
+        Deterministic grouping over the entity/topic index, incremental via
+        per-group cursors, LLM proposal when configured with the deterministic
+        statistical proposal as fallback.  Explicit call — schedule it from
+        the agent loop or cron, not from inside the engine.
+        """
+        report = self._consolidator.consolidate(
+            max_groups=max_groups,
+            max_episodes_per_group=max_episodes_per_group,
+            min_support=min_support,
+        )
+        if report.touched:
+            self._semantic_index.invalidate()
+        return report
+
     def forget(self, memory_id: int) -> bool:
         """Soft delete: archive now, physical removal is a later-phase decision."""
         archived = self._store.archive(memory_id)
@@ -306,6 +384,7 @@ class MemoryEngine:
             avg_importance=round(float(extremes["avg_importance"] or 0.0), 4),
             oldest_created_at=self._db.parse_dt(extremes["oldest"]),
             newest_created_at=self._db.parse_dt(extremes["newest"]),
+            semantic_memories=self._db.semantic_count(),
         )
 
     # -- helpers ------------------------------------------------------------------
@@ -320,6 +399,9 @@ class MemoryEngine:
 
     def _embed(self, extracted: ExtractedExperience) -> np.ndarray:
         text = _embedding_text(extracted.content, extracted.entities, extracted.topics)
+        return self._embedder.embed_texts([text])[0]
+
+    def _embed_text(self, text: str) -> np.ndarray:
         return self._embedder.embed_texts([text])[0]
 
     # -- lifecycle ------------------------------------------------------------------

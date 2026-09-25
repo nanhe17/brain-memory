@@ -139,6 +139,64 @@ into the cue, which leaked them into the FTS MATCH expression — a stale
 session entity resurrected fresh-but-unrelated memories on recency.  Query
 terms come from cue variants alone; the boost only reweights factors.
 
+## Phase 3 decisions
+
+### Deterministic grouping instead of embedding clustering
+
+The design conversation's replay step ("cluster similar episodes") is the
+weakest link when taken literally: conversational episode embeddings cluster
+poorly, and cluster-then-summarize reliably produces garbage knowledge.  The
+implementation groups over the entity/topic index built at encode time —
+exact, explainable, already paid for — and requires `min_support` (default 3)
+episodes per group before anything is proposed.  Entity/topic groups with the
+same folded value collapse into one candidate.
+
+### The quality gate, not the summarizer, is the safety net
+
+The deterministic path (no LLM configured) only ever states co-occurrence —
+"X appears across N memories, mainly involving …" — with confidence hard-capped
+at 0.55: it can count, it cannot judge meaning, so it never claims
+preferences or facts.  The LLM path must return, alongside its statement, the
+indexes of episodes that genuinely support it; a supporting subset below
+`min_support` fails the gate and nothing is stored.  Over-generalization
+thus degrades to "no knowledge", never to "wrong knowledge".
+
+### Structural identity + full version trail
+
+Semantic memories are keyed by the folded concept value — one row per
+concept, never duplicated by textual similarity (pattern separation belongs
+to the semantic layer, per the Phase 1 note).  Every create/update appends a
+`memory_versions` row (statement, confidence, evidence, change reason), so
+Phase 4's reconsolidation inherits a complete history for free.  Confidence
+on update smooths (`0.5·old + 0.5·new`) and evidence unions.
+
+### The incremental cursor is scoped to the value, not (kind, value)
+
+The first implementation stored the consolidation cursor per
+`(group_kind, group_value)`.  Because entity:java and topic:java collapse to
+one candidate, the kind without a cursor always re-entered with full "new
+evidence", re-consolidating the same concept and bumping versions pointlessly
+(caught by the idempotency test).  The cursor is now keyed by the folded
+value only.
+
+### Unified recall via a read-only Episode view
+
+Semantic hits carry `kind="semantic"` plus the real `SemanticMemory`, and
+also an Episode-*shaped view* (content=statement, created_at=updated_at,
+importance=confidence, entities=[concept]) so every existing consumer —
+reranker, prompt block, HTTP layer, demo — treats hits uniformly without
+branching.  The view's id lives in the semantic id space; callers must not
+feed it back into episode APIs.  Semantic hits are capped
+(`semantic_recall_limit`, default 3) so consolidated knowledge can never
+flood episodic recall, and render under `[KNOWN FACTS]` in the prompt block.
+
+### Evidence is never consumed
+
+Consolidation reads episodes and links them as evidence; it archives nothing.
+Provenance is what makes `inspect_semantic` (statement + evidence + versions)
+an honest answer to "why do you believe this" — destroying the evidence to
+save space is Phase 5 decay's job, driven by access statistics.
+
 ## Known limitations (accepted for Phase 1)
 
 - Heuristic entity extraction misses bare lowercase latin tokens (e.g.

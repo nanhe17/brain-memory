@@ -26,25 +26,26 @@ HASH_CONFIG = MemoryConfig(db_path=":memory:", embedding_dim=256)
 
 
 def test_recall_at_k():
-    assert recall_at_k({1, 2}, [3, 1, 2], k=3) == 1.0
-    assert recall_at_k({1, 2}, [3, 1, 4], k=2) == 0.5
-    assert recall_at_k(set(), [1], k=1) == 1.0  # nothing expected -> perfect
+    assert recall_at_k({"e1", "e2"}, ["e3", "e1", "e2"], k=3) == 1.0
+    assert recall_at_k({"e1", "e2"}, ["e3", "e1", "e4"], k=2) == 0.5
+    assert recall_at_k(set(), ["e1"], k=1) == 1.0  # nothing expected -> perfect
 
 
 def test_mrr():
-    assert mrr({2}, [1, 2, 3]) == pytest.approx(0.5)
-    assert mrr({3}, [3, 2, 1]) == pytest.approx(1.0)
-    assert mrr({9}, [1, 2, 3]) == 0.0
+    assert mrr({"e2"}, ["e1", "e2", "e3"]) == pytest.approx(0.5)
+    assert mrr({"e3"}, ["e3", "e2", "e1"]) == pytest.approx(1.0)
+    assert mrr({"e9"}, ["e1", "e2", "e3"]) == 0.0
+    assert mrr({"s1"}, ["e1", "s1"]) == pytest.approx(0.5)  # semantic tags mix in
 
 
 def test_precision_at_k():
-    assert precision_at_k({1, 2}, [1, 2, 3, 4], k=4) == pytest.approx(0.5)
-    assert precision_at_k({1}, [], k=2) == 0.0
+    assert precision_at_k({"e1", "e2"}, ["e1", "e2", "e3", "e4"], k=4) == pytest.approx(0.5)
+    assert precision_at_k({"e1"}, [], k=2) == 0.0
 
 
 def test_violation_count():
-    assert violation_count({2}, [2, 1], k=2) == 1
-    assert violation_count({2}, [1, 2], k=1) == 0
+    assert violation_count({"e2"}, ["e2", "e1"], k=2) == 1
+    assert violation_count({"e2"}, ["e1", "e2"], k=1) == 0
 
 
 # -- scenario loading ----------------------------------------------------------
@@ -88,7 +89,7 @@ def test_load_rejects_empty_expect(tmp_path):
     bad = {
         "name": "bad",
         "episodes": [{"text": "one"}],
-        "cues": [{"text": "cue", "expect": []}],
+        "cues": [{"text": "cue", "expect": [], "expect_concepts": []}],
     }
     _write_scenario(tmp_path, bad)
     with pytest.raises(ValidationError):
@@ -108,7 +109,7 @@ def test_runner_maps_indexes_and_scores(tmp_path):
     result = ScenarioRunner(config=HASH_CONFIG, default_k=2).run(scenario)
     assert result.name == "tiny"
     cue = result.cues[0]
-    assert cue.expected_ids == [1]  # index 0 -> id 1
+    assert cue.expected_ids == ["e1"]  # index 0 -> id 1
     assert cue.recall == 1.0
     assert cue.mrr == 1.0
     assert cue.violations == 0
@@ -126,7 +127,28 @@ def test_runner_days_ago_sets_recency():
         }
     )
     result = ScenarioRunner(config=HASH_CONFIG).run(scenario)
-    assert result.cues[0].ranked_ids[0] == 2
+    assert result.cues[0].ranked_ids[0] == "e2"
+
+
+def test_runner_consolidation_and_concepts():
+    scenario = ScenarioFile.model_validate(
+        {
+            "name": "consolidated",
+            "tags": ["consolidation"],
+            "consolidate": True,
+            "episodes": [
+                {"text": "用户在学习 Java 后端", "days_ago": 10},
+                {"text": "用户喜欢自学原理，正在学 Java", "days_ago": 8},
+                {"text": "用户整理了 Java 的知识图谱", "days_ago": 6},
+                {"text": "用户今天去爬山了", "days_ago": 1},
+            ],
+            "cues": [{"text": "用户的 Java 学习情况", "expect_concepts": ["java"], "k": 5}],
+        }
+    )
+    result = ScenarioRunner(config=HASH_CONFIG).run(scenario)
+    cue = result.cues[0]
+    assert any(tag.startswith("s") for tag in cue.expected_ids), "semantic tag expected"
+    assert cue.recall == 1.0
 
 
 # -- packaged seed scenarios (baseline regression canaries) ---------------------
@@ -141,7 +163,7 @@ def seed_report():
 
 
 def test_seed_scenario_count(seed_report):
-    assert len(seed_report.scenarios) == 8
+    assert len(seed_report.scenarios) == 9
 
 
 def test_seed_no_forbidden_leaks(seed_report):

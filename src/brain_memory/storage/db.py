@@ -59,8 +59,10 @@ class Database:
     def _migrate(self) -> None:
         """Apply schema migrations in order.
 
-        Migration 1 creates the base schema.  Later migrations append a new
-        ``_apply_migration_N`` method and a version branch here.
+        Migration 1 creates the base schema.  Migration 2 rebuilds
+        ``semantic_memories`` with its full Phase-3 shape (the table was
+        never written before consolidation existed, so drop+create is safe)
+        and adds the consolidation bookkeeping tables.
         """
         with self._lock:
             self._conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)")
@@ -70,6 +72,10 @@ class Database:
             if current < 1:
                 self._apply_migration_1()
                 self._conn.execute("INSERT INTO schema_version(version) VALUES (?)", (1,))
+                self._conn.commit()
+            if current < 2:
+                self._apply_migration_2()
+                self._conn.execute("INSERT INTO schema_version(version) VALUES (?)", (2,))
                 self._conn.commit()
 
     def _apply_migration_1(self) -> None:
@@ -82,6 +88,15 @@ class Database:
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_tags_value ON episode_tags(kind, value)")
         self._conn.execute("CREATE TABLE IF NOT EXISTS semantic_memories (id INTEGER PRIMARY KEY, concept TEXT NOT NULL, statement TEXT NOT NULL, confidence REAL NOT NULL, evidence_ids TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, version INTEGER NOT NULL, status TEXT NOT NULL, metadata TEXT NOT NULL)")
         self._conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY)")
+
+    def _apply_migration_2(self) -> None:
+        self._conn.execute("DROP TABLE IF EXISTS semantic_memories")
+        self._conn.execute("CREATE TABLE IF NOT EXISTS semantic_memories (id INTEGER PRIMARY KEY, concept TEXT NOT NULL, kind TEXT NOT NULL, statement TEXT NOT NULL, confidence REAL NOT NULL, evidence_ids TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, version INTEGER NOT NULL, status TEXT NOT NULL, embedding BLOB, embedding_dim INTEGER NOT NULL, access_count INTEGER NOT NULL, last_accessed TEXT, metadata TEXT NOT NULL)")
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_semantic_concept ON semantic_memories(concept)")
+        self._conn.execute("CREATE VIRTUAL TABLE IF NOT EXISTS semantic_fts USING fts5(statement, concept)")
+        self._conn.execute("CREATE TABLE IF NOT EXISTS consolidation_state (value TEXT PRIMARY KEY, representative_kind TEXT NOT NULL, last_consolidated_at TEXT NOT NULL, episode_count INTEGER NOT NULL, semantic_id INTEGER)")
+        self._conn.execute("CREATE TABLE IF NOT EXISTS memory_versions (id INTEGER PRIMARY KEY, semantic_id INTEGER NOT NULL, version INTEGER NOT NULL, statement TEXT NOT NULL, confidence REAL NOT NULL, evidence_ids TEXT NOT NULL, created_at TEXT NOT NULL, change_reason TEXT NOT NULL)")
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_versions_semantic ON memory_versions(semantic_id, version)")
 
     # -- json / datetime helpers --------------------------------------------
 
@@ -192,6 +207,110 @@ class Database:
         """Returns (rowid, rank) pairs; bm25 rank — smaller is better."""
         with self._lock:
             return self._conn.execute("SELECT rowid, bm25(episodes_fts) AS rank FROM episodes_fts WHERE episodes_fts MATCH ? ORDER BY rank LIMIT ?", (match_expr, limit)).fetchall()
+
+    # -- semantic memories -----------------------------------------------------
+
+    def get_semantic(self, semantic_id: int) -> sqlite3.Row | None:
+        with self._lock:
+            return self._conn.execute("SELECT * FROM semantic_memories WHERE id = ?", (semantic_id,)).fetchone()
+
+    def get_semantic_by_concept(self, concept: str) -> sqlite3.Row | None:
+        with self._lock:
+            return self._conn.execute("SELECT * FROM semantic_memories WHERE concept = ?", (concept,)).fetchone()
+
+    def list_active_semantics(self) -> list[sqlite3.Row]:
+        with self._lock:
+            return self._conn.execute("SELECT * FROM semantic_memories WHERE status = 'active' ORDER BY updated_at DESC").fetchall()
+
+    def list_active_semantic_embeddings(self) -> list[sqlite3.Row]:
+        with self._lock:
+            return self._conn.execute("SELECT id, embedding, embedding_dim FROM semantic_memories WHERE status = 'active' AND embedding IS NOT NULL").fetchall()
+
+    def insert_semantic(self, *, concept: str, kind: str, statement: str, confidence: float,
+                        evidence_ids: list[int], created_at: str, embedding: bytes | None,
+                        embedding_dim: int, metadata: dict[str, Any]) -> int:
+        with self._lock:
+            cur = self._conn.execute("INSERT INTO semantic_memories (concept, kind, statement, confidence, evidence_ids, created_at, updated_at, version, status, embedding, embedding_dim, access_count, last_accessed, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 'active', ?, ?, 0, NULL, ?)", (concept, kind, statement, confidence, self.dumps(evidence_ids), created_at, created_at, embedding, embedding_dim, self.dumps(metadata)))
+            self._conn.commit()
+            return int(cur.lastrowid)
+
+    def update_semantic(self, semantic_id: int, *, kind: str, statement: str, confidence: float,
+                        evidence_ids: list[int], updated_at: str, version: int,
+                        embedding: bytes | None, embedding_dim: int) -> None:
+        with self._lock:
+            self._conn.execute("UPDATE semantic_memories SET kind = ?, statement = ?, confidence = ?, evidence_ids = ?, updated_at = ?, version = ?, embedding = ?, embedding_dim = ? WHERE id = ?", (kind, statement, confidence, self.dumps(evidence_ids), updated_at, version, embedding, embedding_dim, semantic_id))
+            self._conn.commit()
+
+    def touch_semantic(self, semantic_id: int, when_iso: str) -> None:
+        with self._lock:
+            self._conn.execute("UPDATE semantic_memories SET access_count = access_count + 1, last_accessed = ? WHERE id = ?", (when_iso, semantic_id))
+            self._conn.commit()
+
+    def set_semantic_status(self, semantic_id: int, status: str) -> bool:
+        with self._lock:
+            cur = self._conn.execute("UPDATE semantic_memories SET status = ? WHERE id = ?", (status, semantic_id))
+            self._conn.commit()
+            return cur.rowcount > 0
+
+    def semantic_count(self) -> int:
+        with self._lock:
+            row = self._conn.execute("SELECT COUNT(*) AS n FROM semantic_memories").fetchone()
+        return int(row["n"])
+
+    # -- semantic FTS ------------------------------------------------------------
+
+    def semantic_fts_insert(self, rowid: int, statement: str, concept: str) -> None:
+        with self._lock:
+            self._conn.execute("INSERT INTO semantic_fts(rowid, statement, concept) VALUES (?, ?, ?)", (rowid, statement, concept))
+            self._conn.commit()
+
+    def semantic_fts_delete(self, rowid: int) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM semantic_fts WHERE rowid = ?", (rowid,))
+            self._conn.commit()
+
+    def semantic_fts_search(self, match_expr: str, limit: int) -> list[sqlite3.Row]:
+        """Returns (rowid, rank) pairs; bm25 rank — smaller is better."""
+        with self._lock:
+            return self._conn.execute("SELECT rowid, bm25(semantic_fts) AS rank FROM semantic_fts WHERE semantic_fts MATCH ? ORDER BY rank LIMIT ?", (match_expr, limit)).fetchall()
+
+    # -- memory versions -----------------------------------------------------------
+
+    def insert_memory_version(self, *, semantic_id: int, version: int, statement: str,
+                              confidence: float, evidence_ids: list[int],
+                              created_at: str, change_reason: str) -> None:
+        with self._lock:
+            self._conn.execute("INSERT INTO memory_versions (semantic_id, version, statement, confidence, evidence_ids, created_at, change_reason) VALUES (?, ?, ?, ?, ?, ?, ?)", (semantic_id, version, statement, confidence, self.dumps(evidence_ids), created_at, change_reason))
+            self._conn.commit()
+
+    def list_memory_versions(self, semantic_id: int) -> list[sqlite3.Row]:
+        with self._lock:
+            return self._conn.execute("SELECT * FROM memory_versions WHERE semantic_id = ? ORDER BY version", (semantic_id,)).fetchall()
+
+    # -- consolidation state ----------------------------------------------------------
+
+    def get_consolidation_state(self, value: str) -> sqlite3.Row | None:
+        with self._lock:
+            return self._conn.execute("SELECT * FROM consolidation_state WHERE value = ?", (value,)).fetchone()
+
+    def list_consolidation_states(self) -> list[sqlite3.Row]:
+        with self._lock:
+            return self._conn.execute("SELECT * FROM consolidation_state").fetchall()
+
+    def upsert_consolidation_state(self, *, value: str, representative_kind: str,
+                                   last_consolidated_at: str, episode_count: int,
+                                   semantic_id: int | None) -> None:
+        with self._lock:
+            self._conn.execute("INSERT INTO consolidation_state (value, representative_kind, last_consolidated_at, episode_count, semantic_id) VALUES (?, ?, ?, ?, ?) ON CONFLICT(value) DO UPDATE SET representative_kind = excluded.representative_kind, last_consolidated_at = excluded.last_consolidated_at, episode_count = excluded.episode_count, semantic_id = excluded.semantic_id", (value, representative_kind, last_consolidated_at, episode_count, semantic_id))
+            self._conn.commit()
+
+    # -- grouping ---------------------------------------------------------------------
+
+    def tag_group_counts(self) -> list[sqlite3.Row]:
+        """Active-episode counts per (tag kind, value) — the consolidation
+        candidate groups."""
+        with self._lock:
+            return self._conn.execute("SELECT t.kind AS kind, t.value AS value, COUNT(*) AS n FROM episode_tags t JOIN episodes e ON e.id = t.episode_id WHERE e.status = 'active' GROUP BY t.kind, t.value").fetchall()
 
     # -- transactions -----------------------------------------------------------
 

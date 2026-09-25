@@ -13,13 +13,18 @@ Quick start::
 from brain_memory.config import MemoryConfig, RetrievalWeights
 from brain_memory.engine import MemoryEngine
 from brain_memory.models import (
+    ConsolidationReport,
     EncodeResult,
     EngineStats,
     Episode,
     ExtractedExperience,
     FactorScores,
     MemoryStatus,
+    MemoryVersion,
+    PatternProposal,
     RecallResult,
+    SemanticKind,
+    SemanticMemory,
     WorkingMemoryState,
 )
 from brain_memory.working.working_memory import WorkingMemory
@@ -31,13 +36,18 @@ __all__ = [
     "MemoryConfig",
     "RetrievalWeights",
     "WorkingMemory",
+    "ConsolidationReport",
     "EncodeResult",
     "EngineStats",
     "Episode",
     "ExtractedExperience",
     "FactorScores",
     "MemoryStatus",
+    "MemoryVersion",
+    "PatternProposal",
     "RecallResult",
+    "SemanticKind",
+    "SemanticMemory",
     "WorkingMemoryState",
     "__version__",
 ]

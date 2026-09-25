@@ -71,6 +71,12 @@ class MemoryConfig(BaseModel):
     rerank_mix: float = Field(default=0.4, ge=0.0, le=1.0)
     rerank_timeout: float = Field(default=8.0, gt=0.0)
 
+    # ---- Phase 3: consolidation ----
+    # Episodes needed before a concept group may become a semantic memory.
+    consolidation_min_support: int = Field(default=3, ge=1)
+    # Cap on semantic hits inside one recall (they must not flood episodic recall).
+    semantic_recall_limit: int = Field(default=3, ge=0)
+
     @classmethod
     def from_env(cls, env_file: str | os.PathLike | None = None) -> "MemoryConfig":
         """Build a config from ``MEMORY_*`` environment variables.
@@ -120,4 +126,6 @@ class MemoryConfig(BaseModel):
             rerank_top_n=int(get("RERANK_TOP_N", "20")),
             rerank_mix=float(get("RERANK_MIX", "0.4")),
             rerank_timeout=float(get("RERANK_TIMEOUT", "8")),
+            consolidation_min_support=int(get("CONSOLIDATION_MIN_SUPPORT", "3")),
+            semantic_recall_limit=int(get("SEMANTIC_RECALL_LIMIT", "3")),
         )

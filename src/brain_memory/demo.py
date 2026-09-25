@@ -9,6 +9,8 @@ an experience; commands start with ``/``::
     /forget <id>     archive a memory (soft delete)
     /stats           memory statistics
     /prompt          show the working-memory prompt block
+    /consolidate     replay + pattern extraction -> semantic memories
+    /facts           list consolidated semantic memories
     /exit            quit
 
 The database persists across runs — restart and ask about something you said
@@ -64,6 +66,31 @@ def run(db_path: str) -> int:
         if line == "/prompt":
             block = engine.working.build_prompt_block()
             print(block or "  (working memory is empty)")
+            continue
+        if line == "/consolidate":
+            report = engine.consolidate()
+            print(
+                f"  groups considered: {report.groups_considered}, "
+                f"created: {len(report.created)}, updated: {len(report.updated)}"
+            )
+            for memory in report.touched:
+                print(
+                    f"  S-{memory.id} [{memory.kind.value}] ({memory.concept}) "
+                    f"v{memory.version} conf={memory.confidence:.2f}: {memory.statement}"
+                )
+            for reason in report.skipped:
+                print(f"  skipped: {reason}")
+            continue
+        if line == "/facts":
+            facts = engine.list_semantics()
+            if not facts:
+                print("  (no semantic memories yet — try /consolidate)")
+            for memory in facts:
+                print(
+                    f"  S-{memory.id} [{memory.kind.value}] ({memory.concept}) "
+                    f"v{memory.version} conf={memory.confidence:.2f} "
+                    f"evidence={memory.evidence_ids}: {memory.statement}"
+                )
             continue
         if line.startswith("/recall "):
             cue = line[len("/recall "):].strip()

@@ -106,10 +106,27 @@ class WorkingMemory:
             lines.append(line)
             used += estimate_tokens(line)
 
-        if self._last_recall:
+        semantic_hits = [r for r in self._last_recall if r.is_semantic and r.semantic]
+        if semantic_hits:
+            lines.append("[KNOWN FACTS]")
+            used += estimate_tokens("[KNOWN FACTS]")
+            for result in semantic_hits:
+                memory = result.semantic
+                entry = (
+                    f"- {memory.concept}: {memory.statement} "
+                    f"(S-{memory.id}, confidence {memory.confidence:.2f})"
+                )
+                cost = estimate_tokens(entry)
+                if used + cost > budget:
+                    break
+                lines.append(entry)
+                used += cost
+
+        episodic_hits = [r for r in self._last_recall if not r.is_semantic]
+        if episodic_hits:
             lines.append("[RELEVANT MEMORIES]")
             used += estimate_tokens("[RELEVANT MEMORIES]")
-            for result in self._last_recall:
+            for result in episodic_hits:
                 episode = result.episode
                 entry = (
                     f"- #{episode.id} ({episode.created_at:%Y-%m-%d}) "

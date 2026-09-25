@@ -45,6 +45,59 @@ extraction, multi-factor recall with explanations, and soft forgetting.
 - Cross-session persistence (SQLite), zero external services, offline by
   default.
 
+## What Phase 2 adds
+
+- **Evaluation harness** (`brain-memory-eval`): YAML scenarios, Recall@k /
+  MRR / violation metrics, and a seeded weight-sweep over the 7-factor
+  simplex. Measure first, then tune.
+- **LLM query expansion**: cue + working-memory snapshot → rewritten query
+  and sub-queries. Advisory only — the original cue always stays its own
+  retrieval channel.
+- **Blind LLM rerank**: top candidates scored on content only, fused as
+  `mix * llm + (1 - mix) * factor_score`; recency/importance keep their
+  voice through the factor score.
+- **Session-entity boost**: working-memory entities bias the entity-overlap
+  factor (factor-only — they never become query terms).
+
+## What Phase 3 adds: consolidation
+
+Episodes crystallize into **semantic memories** — knowledge with evidence,
+confidence, and a full version trail:
+
+```python
+engine.encode("用户在学习 Java 后端，正在读 Spring 的源码")
+engine.encode("用户说不想只看课程，更喜欢自学原理")
+engine.encode("用户整理了 Java 的知识图谱")
+
+report = engine.consolidate()          # replay + pattern extraction
+for memory in report.created:
+    print(f"S-{memory.id} ({memory.concept}): {memory.statement}")
+
+hits = engine.recall("用户的学习方式")   # semantic hits carry kind="semantic"
+inspection = engine.inspect_semantic(hits[0].semantic.id)
+# -> statement + evidence episodes + version history ("why do you believe this")
+```
+
+Design properties:
+
+- **Deterministic grouping** over the entity/topic index — no embedding
+  clustering. A group needs `MEMORY_CONSOLIDATION_MIN_SUPPORT` (default 3)
+  episodes before anything is proposed, and the LLM's supporting-episode
+  subset must clear the same bar (over-generalization fails the gate).
+- **Structural identity**: one semantic memory per concept key — never
+  duplicated by textual similarity. Updates bump the version and append a
+  `memory_versions` row (evidence merges, confidence smooths).
+- **Honest without an LLM**: the deterministic path only states co-occurrence
+  ("X appears across N memories, mainly involving …") with confidence capped
+  at 0.55. Preference/fact-level statements require the LLM consolidator.
+- **Incremental & budgeted**: per-concept cursors mean only groups with new
+  evidence are reprocessed; `max_groups` / `max_episodes_per_group` bound
+  each run. Explicit call — schedule it from your agent loop or cron.
+- **Unified recall**: semantic hits join the same hybrid retrieval and show
+  up in the prompt block under `[KNOWN FACTS]`, capped by
+  `MEMORY_SEMANTIC_RECALL_LIMIT` so knowledge never floods episodic recall.
+- **Evidence preserved**: consolidation never touches the episodes.
+
 ## Quick start
 
 ```bash
@@ -176,7 +229,7 @@ frequency, CJK-aware FTS indexing, heuristic-first importance scoring.
 
 ```bash
 pip install -e '.[dev]'
-pytest                 # 101 tests
+pytest                 # 132 tests
 ```
 
 Tests cover parsing, embeddings, storage, ranking, retrieval, working memory,
@@ -189,8 +242,8 @@ transport), and the evaluation harness.
 |---|---|---|
 | 1 | episodic + working memory + hybrid retrieval + API | ✅ |
 | 2 | eval harness + weight sweep, LLM query expansion, blind rerank fusion, session-entity boost | ✅ |
-| 3 | replay → clustering → semantic memory (consolidation) | tables reserved |
-| 4 | reconsolidation: conflict detection, versioning | planned |
+| 3 | replay → semantic memory consolidation, versioning, unified recall | ✅ |
+| 4 | reconsolidation: conflict detection, memory evolution | tables ready |
 | 5 | decay scheduler, memory strength, archive GC | soft delete done |
 | 6-7 | memory graph, inspector UI, full benchmark suite | planned |
 

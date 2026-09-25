@@ -1,0 +1,18 @@
+# Consolidation: several episodes about the user's learning style must
+# crystallize into a semantic memory that an indirect cue can recall.
+name: semantic_consolidation
+tags: [consolidation]
+consolidate: true
+episodes:
+  - text: "用户在学习 Java 后端，正在读 Spring 的源码"
+    days_ago: 20
+  - text: "用户说不想只看课程，更喜欢自学原理，最近在学 Java"
+    days_ago: 15
+  - text: "用户自己啃 Spring 源码搞明白了依赖注入"
+    days_ago: 10
+  - text: "用户整理了 Java 的知识图谱，把 Spring 的 bean 和依赖注入串了起来"
+    days_ago: 5
+cues:
+  - text: "用户的 Java 学习方式是什么样的？"
+    expect_concepts: ["java"]
+    k: 5
