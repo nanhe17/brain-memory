@@ -8,6 +8,7 @@ only groups with new evidence are reprocessed.
 """
 
 from brain_memory.consolidation.consolidator import Consolidator
+from brain_memory.consolidation.conflicts import ConflictStore
 from brain_memory.consolidation.grouping import CandidateGroup, candidate_groups
 from brain_memory.consolidation.heuristic import HeuristicConsolidator
 from brain_memory.consolidation.llm import LLMConsolidator
@@ -15,6 +16,7 @@ from brain_memory.consolidation.semantic_store import SemanticStore
 
 __all__ = [
     "Consolidator",
+    "ConflictStore",
     "CandidateGroup",
     "candidate_groups",
     "HeuristicConsolidator",

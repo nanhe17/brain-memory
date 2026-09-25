@@ -18,6 +18,7 @@ from types import TracebackType
 import numpy as np
 
 from brain_memory.config import MemoryConfig
+from brain_memory.consolidation.conflicts import ConflictStore
 from brain_memory.consolidation.consolidator import Consolidator
 from brain_memory.consolidation.llm import LLMConsolidator
 from brain_memory.consolidation.semantic_store import SemanticStore
@@ -29,11 +30,13 @@ from brain_memory.extraction.base import ExperienceParser
 from brain_memory.extraction.heuristic import HeuristicExperienceParser
 from brain_memory.extraction.llm import LLMExperienceParser
 from brain_memory.models import (
+    ConflictKind,
     ConsolidationReport,
     EncodeResult,
     EngineStats,
     Episode,
     ExtractedExperience,
+    MemoryConflict,
     MemoryStatus,
     RecallResult,
     SemanticMemory,
@@ -69,6 +72,7 @@ class MemoryEngine:
         self._index = VectorIndex(self._db)
         self._semantic_store = SemanticStore(self._db)
         self._semantic_index = VectorIndex(self._db, self._db.list_active_semantic_embeddings)
+        self._conflict_store = ConflictStore(self._db)
         self._embedder = self._build_embedder()
         self._parser = self._build_parser()
         self._retriever = Retriever(
@@ -84,6 +88,7 @@ class MemoryEngine:
             self._db,
             self._store,
             self._semantic_store,
+            self._conflict_store,
             self.config,
             embed_fn=self._embed_text,
         )
@@ -164,9 +169,52 @@ class MemoryEngine:
         episode, duplicate = self._store.add(extracted, vector, metadata=metadata)
         if not duplicate:
             self._index.invalidate()
+        challenge = None if duplicate else self._detect_challenge(episode)
         self.working.note_episode(episode.id)
         self.working.add_entities(episode.entities)
-        return EncodeResult(episode=episode, duplicate=duplicate)
+        return EncodeResult(episode=episode, duplicate=duplicate, challenge=challenge)
+
+    def _detect_challenge(self, episode: Episode) -> MemoryConflict | None:
+        """Reconsolidation entry (doc §15): a correction against a known
+        belief opens a conflict and forces reconsolidation — it never edits
+        the statement or the confidence itself; the evidence is weighed at
+        reconsolidation time, not at detection time."""
+        if "correction" not in episode.emphasis_signals:
+            return None
+        concepts = {e.casefold() for e in episode.entities} | {
+            t.casefold() for t in episode.topics
+        }
+        targets: list[SemanticMemory] = []
+        for concept in sorted(concepts):
+            memory = self._semantic_store.get_by_concept(concept)
+            if memory is not None and memory.status is MemoryStatus.ACTIVE:
+                targets.append(memory)
+        if not targets:
+            # indirect correction ("其实我改主意了"): only trust it when the
+            # working memory holds exactly one semantic hit — never guess
+            # among several.
+            recalled = [
+                r.semantic for r in self.working.last_recall
+                if r.is_semantic and r.semantic
+            ]
+            if len(recalled) == 1:
+                targets = [recalled[0]]
+        if not targets:
+            return None
+
+        conflict: MemoryConflict | None = None
+        for target in targets:
+            recorded = self._conflict_store.create(
+                semantic_id=target.id,
+                kind=ConflictKind.UNRESOLVED,
+                old_version=target.version,
+                statement_before=target.statement,
+                trigger_episode_id=episode.id,
+                trigger_kind="encode",
+            )
+            if conflict is None:
+                conflict = recorded
+        return conflict
 
     def recall(
         self,
@@ -318,7 +366,8 @@ class MemoryEngine:
 
     def inspect_semantic(self, semantic_id: int) -> dict | None:
         """Answer "why do you believe this": the statement, its evidence
-        episodes, and the full version trail (doc §39, principle 6)."""
+        episodes, the full version trail, and every recorded conflict
+        (doc §39, principle 6)."""
         memory = self._semantic_store.get(semantic_id)
         if memory is None:
             return None
@@ -326,7 +375,27 @@ class MemoryEngine:
             "semantic": memory,
             "evidence": self._store.get_many(memory.evidence_ids),
             "versions": self._semantic_store.versions(semantic_id),
+            "conflicts": self._conflict_store.for_semantic(semantic_id),
         }
+
+    def conflicts(self, status: str | None = None) -> list[MemoryConflict]:
+        """All recorded conflicts, optionally filtered by status
+        (open/resolved/dismissed)."""
+        return self._conflict_store.list(status=status)
+
+    def reconsolidate(self, semantic_id: int, *, max_episodes_per_group: int = 20) -> ConsolidationReport:
+        """Manually force reconsolidation of one semantic memory
+        (doc §4: memory.reconsolidate(memory_id, evidence))."""
+        memory = self._semantic_store.get(semantic_id)
+        if memory is None:
+            raise ValueError(f"semantic memory {semantic_id} not found")
+        report = self._consolidator.consolidate(
+            forced_values=[memory.concept],
+            max_episodes_per_group=max_episodes_per_group,
+        )
+        if report.touched:
+            self._semantic_index.invalidate()
+        return report
 
     def find_semantic(self, concept: str) -> SemanticMemory | None:
         """Look up a semantic memory by its structural concept key."""
@@ -385,6 +454,7 @@ class MemoryEngine:
             oldest_created_at=self._db.parse_dt(extremes["oldest"]),
             newest_created_at=self._db.parse_dt(extremes["newest"]),
             semantic_memories=self._db.semantic_count(),
+            open_conflicts=self._db.count_open_conflicts(),
         )
 
     # -- helpers ------------------------------------------------------------------

@@ -26,6 +26,21 @@ Return ONLY a JSON object:
 }
 Rules: never invent details; the statement must be backed by at least the minimum support count of episodes listed in "supporting"; if the episodes do not actually share a stable pattern, return {"statement": "", "supporting": []}."""
 
+_RECONSOLIDATION_PROMPT = """You re-examine an existing belief about a concept in light of NEW memory episodes.
+Return ONLY a JSON object:
+{
+  "change_kind": "consistent | contradiction | evolution | correction | context_change",
+  "statement": "the updated belief in one self-contained sentence (keep the episodes' dominant language)",
+  "kind": "fact | preference | schema | generalization",
+  "confidence": 0.0-1.0,
+  "supporting": [indexes of the episodes that support the NEW statement]
+}
+Rules:
+- "consistent": the new episodes merely refine or extend the previous statement — write the refined statement.
+- any other change_kind: the new evidence changes what we believed. Write a TEMPORAL NARRATIVE statement that preserves the history, e.g. "User used to ... but has now ...". Never erase the past.
+- contradiction = the new evidence directly opposes the old belief; evolution = the preference/situation drifted over time; correction = the old statement was simply wrong; context_change = both true in different contexts.
+- never invent details; if the new evidence is too thin to update the belief, return {"statement": "", "supporting": []}."""
+
 
 class LLMConsolidator:
     def __init__(
@@ -98,6 +113,74 @@ class LLMConsolidator:
             kind=kind if kind is not SemanticKind.CO_OCCURRENCE else SemanticKind.GENERALIZATION,
             confidence=max(0.0, min(1.0, confidence)),
             supporting_indexes=supporting,
+        )
+
+
+    def repropose(
+        self,
+        concept: str,
+        episodes: list[Episode],
+        existing,
+        *,
+        min_support: int,
+    ) -> PatternProposal | None:
+        """Reconsolidation verdict for an existing semantic memory.
+
+        Raises on transport/parse failure; returns None when the evidence is
+        too thin to meet the reconsolidation threshold (the old statement
+        then stays untouched).
+        """
+        window = episodes[: self.max_episodes]
+        lines = [
+            f"[{index}] ({episode.created_at:%Y-%m-%d}) {episode.content[: self.content_chars]}"
+            for index, episode in enumerate(window)
+        ]
+        user_content = (
+            f"CONCEPT: {concept}\nMINIMUM SUPPORT: {min_support}\n"
+            f"PREVIOUS STATEMENT (v{existing.version}): {existing.statement}\n\n"
+            "EPISODES:\n" + "\n".join(lines)
+        )
+        response = httpx.post(
+            f"{self.base_url}/chat/completions",
+            headers={"Authorization": f"Bearer {self.api_key}"},
+            json={
+                "model": self.model,
+                "messages": [
+                    {"role": "system", "content": _RECONSOLIDATION_PROMPT},
+                    {"role": "user", "content": user_content},
+                ],
+                "temperature": 0.0,
+            },
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        raw = response.json()["choices"][0]["message"]["content"]
+        data = _extract_json(raw)
+
+        statement = str(data.get("statement", "")).strip()
+        supporting = _valid_indexes(data.get("supporting"), len(window))
+        if not statement or len(supporting) < min_support:
+            return None
+
+        change_kind = str(data.get("change_kind", "consistent")).strip().lower()
+        if change_kind not in (
+            "consistent", "contradiction", "evolution", "correction", "context_change"
+        ):
+            change_kind = "consistent"
+        try:
+            kind = SemanticKind(str(data.get("kind", "fact")).strip().lower())
+        except ValueError:
+            kind = SemanticKind.FACT
+        if kind is SemanticKind.CO_OCCURRENCE:
+            kind = SemanticKind.GENERALIZATION
+        confidence = float(data.get("confidence", 0.6))
+        return PatternProposal(
+            concept=concept,
+            statement=" ".join(statement.split()),
+            kind=kind,
+            confidence=max(0.0, min(1.0, confidence)),
+            supporting_indexes=supporting,
+            change_kind=change_kind,  # type: ignore[arg-type]
         )
 
 

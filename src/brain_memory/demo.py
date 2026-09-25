@@ -11,6 +11,7 @@ an experience; commands start with ``/``::
     /prompt          show the working-memory prompt block
     /consolidate     replay + pattern extraction -> semantic memories
     /facts           list consolidated semantic memories
+    /conflicts       list recorded belief conflicts
     /exit            quit
 
 The database persists across runs — restart and ask about something you said
@@ -53,6 +54,18 @@ def run(db_path: str) -> int:
         if not line:
             continue
 
+        if line == "/conflicts":
+            rows = engine.conflicts()
+            if not rows:
+                print("  (no conflicts recorded)")
+            for conflict in rows:
+                target = f"S-{conflict.semantic_id}"
+                print(
+                    f"  #{conflict.id} {target} [{conflict.kind.value}/{conflict.status.value}] "
+                    f"v{conflict.old_version}→v{conflict.resolution_version} "
+                    f"via {conflict.trigger_kind}: was: {conflict.statement_before}"
+                )
+            continue
         if line == "/exit":
             break
         if line == "/stats":
@@ -132,6 +145,11 @@ def run(db_path: str) -> int:
         label = "duplicate of" if result.duplicate else "encoded as"
         print(f"  {label} #{result.episode.id} (importance={result.episode.importance}, "
               f"entities={result.episode.entities})")
+        if result.challenge is not None:
+            print(
+                f"  ⚡ challenges S-{result.challenge.semantic_id} "
+                f"(was: {result.challenge.statement_before}) — run /consolidate to re-examine"
+            )
         hits = engine.recall(line, k=3, touch=True)
         hits = [h for h in hits if h.episode.id != result.episode.id]
         if hits:

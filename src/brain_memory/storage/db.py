@@ -77,6 +77,10 @@ class Database:
                 self._apply_migration_2()
                 self._conn.execute("INSERT INTO schema_version(version) VALUES (?)", (2,))
                 self._conn.commit()
+            if current < 3:
+                self._apply_migration_3()
+                self._conn.execute("INSERT INTO schema_version(version) VALUES (?)", (3,))
+                self._conn.commit()
 
     def _apply_migration_1(self) -> None:
         self._conn.execute("CREATE TABLE IF NOT EXISTS episodes (id INTEGER PRIMARY KEY, content TEXT NOT NULL, content_hash TEXT NOT NULL, entities TEXT NOT NULL, topics TEXT NOT NULL, key_facts TEXT NOT NULL, emphasis TEXT NOT NULL, context TEXT, source TEXT NOT NULL, created_at TEXT NOT NULL, embedding BLOB, embedding_dim INTEGER NOT NULL, importance REAL NOT NULL, confidence REAL NOT NULL, access_count INTEGER NOT NULL, last_accessed TEXT, status TEXT NOT NULL, metadata TEXT NOT NULL)")
@@ -97,6 +101,10 @@ class Database:
         self._conn.execute("CREATE TABLE IF NOT EXISTS consolidation_state (value TEXT PRIMARY KEY, representative_kind TEXT NOT NULL, last_consolidated_at TEXT NOT NULL, episode_count INTEGER NOT NULL, semantic_id INTEGER)")
         self._conn.execute("CREATE TABLE IF NOT EXISTS memory_versions (id INTEGER PRIMARY KEY, semantic_id INTEGER NOT NULL, version INTEGER NOT NULL, statement TEXT NOT NULL, confidence REAL NOT NULL, evidence_ids TEXT NOT NULL, created_at TEXT NOT NULL, change_reason TEXT NOT NULL)")
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_versions_semantic ON memory_versions(semantic_id, version)")
+
+    def _apply_migration_3(self) -> None:
+        self._conn.execute("CREATE TABLE IF NOT EXISTS memory_conflicts (id INTEGER PRIMARY KEY, semantic_id INTEGER NOT NULL, kind TEXT NOT NULL, status TEXT NOT NULL, old_version INTEGER NOT NULL, statement_before TEXT, trigger_episode_id INTEGER, trigger_kind TEXT NOT NULL, detected_at TEXT NOT NULL, resolution_version INTEGER, resolved_at TEXT, metadata TEXT NOT NULL)")
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_conflicts_semantic ON memory_conflicts(semantic_id, status)")
 
     # -- json / datetime helpers --------------------------------------------
 
@@ -236,9 +244,10 @@ class Database:
 
     def update_semantic(self, semantic_id: int, *, kind: str, statement: str, confidence: float,
                         evidence_ids: list[int], updated_at: str, version: int,
-                        embedding: bytes | None, embedding_dim: int) -> None:
+                        embedding: bytes | None, embedding_dim: int,
+                        metadata: dict[str, Any]) -> None:
         with self._lock:
-            self._conn.execute("UPDATE semantic_memories SET kind = ?, statement = ?, confidence = ?, evidence_ids = ?, updated_at = ?, version = ?, embedding = ?, embedding_dim = ? WHERE id = ?", (kind, statement, confidence, self.dumps(evidence_ids), updated_at, version, embedding, embedding_dim, semantic_id))
+            self._conn.execute("UPDATE semantic_memories SET kind = ?, statement = ?, confidence = ?, evidence_ids = ?, updated_at = ?, version = ?, embedding = ?, embedding_dim = ?, metadata = ? WHERE id = ?", (kind, statement, confidence, self.dumps(evidence_ids), updated_at, version, embedding, embedding_dim, self.dumps(metadata), semantic_id))
             self._conn.commit()
 
     def touch_semantic(self, semantic_id: int, when_iso: str) -> None:
@@ -303,6 +312,60 @@ class Database:
         with self._lock:
             self._conn.execute("INSERT INTO consolidation_state (value, representative_kind, last_consolidated_at, episode_count, semantic_id) VALUES (?, ?, ?, ?, ?) ON CONFLICT(value) DO UPDATE SET representative_kind = excluded.representative_kind, last_consolidated_at = excluded.last_consolidated_at, episode_count = excluded.episode_count, semantic_id = excluded.semantic_id", (value, representative_kind, last_consolidated_at, episode_count, semantic_id))
             self._conn.commit()
+
+    # -- conflicts ----------------------------------------------------------------
+
+    def insert_conflict(self, *, semantic_id: int, kind: str, status: str,
+                        old_version: int, statement_before: str | None,
+                        trigger_episode_id: int | None, trigger_kind: str,
+                        detected_at: str, metadata: dict[str, Any]) -> int:
+        with self._lock:
+            cur = self._conn.execute("INSERT INTO memory_conflicts (semantic_id, kind, status, old_version, statement_before, trigger_episode_id, trigger_kind, detected_at, resolution_version, resolved_at, metadata) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)", (semantic_id, kind, status, old_version, statement_before, trigger_episode_id, trigger_kind, detected_at, self.dumps(metadata)))
+            self._conn.commit()
+            return int(cur.lastrowid)
+
+    def conflicts_for_semantic(self, semantic_id: int) -> list[sqlite3.Row]:
+        with self._lock:
+            return self._conn.execute("SELECT * FROM memory_conflicts WHERE semantic_id = ? ORDER BY detected_at", (semantic_id,)).fetchall()
+
+    def open_conflict_semantic_ids(self) -> list[int]:
+        with self._lock:
+            rows = self._conn.execute("SELECT DISTINCT semantic_id FROM memory_conflicts WHERE status = 'open'").fetchall()
+        return [row["semantic_id"] for row in rows]
+
+    def resolve_conflicts_for_semantic(self, semantic_id: int, *, kind: str,
+                                       resolution_version: int, resolved_at: str,
+                                       dismiss: bool = False) -> int:
+        """Resolve every open conflict of one semantic memory.
+
+        Resolving records the final classification (*kind*); dismissing keeps
+        the original kind and just closes the record.  Returns the number of
+        conflicts touched.
+        """
+        with self._lock:
+            if dismiss:
+                cur = self._conn.execute("UPDATE memory_conflicts SET status = 'dismissed', resolution_version = ?, resolved_at = ? WHERE semantic_id = ? AND status = 'open'", (resolution_version, resolved_at, semantic_id))
+            else:
+                cur = self._conn.execute("UPDATE memory_conflicts SET kind = ?, status = 'resolved', resolution_version = ?, resolved_at = ? WHERE semantic_id = ? AND status = 'open'", (kind, resolution_version, resolved_at, semantic_id))
+            self._conn.commit()
+            return cur.rowcount
+
+    def count_open_conflicts(self) -> int:
+        with self._lock:
+            row = self._conn.execute("SELECT COUNT(*) AS n FROM memory_conflicts WHERE status = 'open'").fetchone()
+        return int(row["n"])
+
+    def list_conflicts(self) -> list[sqlite3.Row]:
+        with self._lock:
+            return self._conn.execute("SELECT * FROM memory_conflicts ORDER BY detected_at DESC").fetchall()
+
+    def list_conflicts_by_status(self, status: str) -> list[sqlite3.Row]:
+        with self._lock:
+            return self._conn.execute("SELECT * FROM memory_conflicts WHERE status = ? ORDER BY detected_at DESC", (status,)).fetchall()
+
+    def get_conflict(self, conflict_id: int) -> sqlite3.Row | None:
+        with self._lock:
+            return self._conn.execute("SELECT * FROM memory_conflicts WHERE id = ?", (conflict_id,)).fetchone()
 
     # -- grouping ---------------------------------------------------------------------
 

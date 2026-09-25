@@ -37,6 +37,7 @@ def candidate_groups(
     min_support: int,
     max_groups: int,
     include_below_support: bool = False,
+    forced_values: tuple[str, ...] | list[str] = (),
 ) -> list[CandidateGroup]:
     """Groups with new evidence, largest first.
 
@@ -46,10 +47,15 @@ def candidate_groups(
     is likewise per value, so a consolidated concept cannot re-enter through
     its other tag kind.
 
+    ``forced_values`` marks concepts with open conflicts: they are always
+    eligible (reconsolidation is due regardless of tag-count deltas) and sort
+    ahead of the rest.
+
     ``include_below_support`` also returns groups that exist but have fewer
     than ``min_support`` episodes — the consolidator reports those as skipped
     so a silent no-op run is explainable.
     """
+    forced = {v.casefold() for v in forced_values}
     states = {
         row["value"]: int(row["episode_count"])
         for row in db.list_consolidation_states()
@@ -67,24 +73,32 @@ def candidate_groups(
             entry["kind"] = "entity"  # entity is the representative kind
         entry["count"] = max(entry["count"], count)
 
+    forced_groups: list[CandidateGroup] = []
     eligible: list[CandidateGroup] = []
     below: list[CandidateGroup] = []
     for folded, entry in merged.items():
         seen_before = states.get(folded, 0)
         new_evidence = max(0, entry["count"] - seen_before)
-        if new_evidence < 1:
+        is_forced = folded in forced
+        if new_evidence < 1 and not is_forced:
             continue
         candidate = CandidateGroup(
             kind=entry["kind"],
             value=folded,
             episode_count=entry["count"],
             new_evidence=new_evidence,
-            eligible=entry["count"] >= min_support,
+            eligible=entry["count"] >= min_support or is_forced,
         )
-        (eligible if candidate.eligible else below).append(candidate)
+        if is_forced:
+            forced_groups.append(candidate)
+        elif candidate.eligible:
+            eligible.append(candidate)
+        else:
+            below.append(candidate)
 
+    forced_groups.sort(key=lambda g: (-g.episode_count, g.value))
     eligible.sort(key=lambda g: (-g.episode_count, g.value))
     if not include_below_support:
-        return eligible[:max_groups]
+        return (forced_groups + eligible)[:max_groups]
     below.sort(key=lambda g: (-g.episode_count, g.value))
-    return [*eligible[:max_groups], *below[:10]]
+    return [*(forced_groups + eligible)[:max_groups], *below[:10]]

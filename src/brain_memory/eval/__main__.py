@@ -65,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
         (result.name, cue)
         for result in results
         for cue in result.cues
-        if cue.recall < 1.0 or cue.violations > 0
+        if cue.recall < 1.0 or cue.violations > 0 or cue.semantic_version_ok is False
     ]
     if misses:
         print("## Cue misses")
@@ -75,7 +75,8 @@ def main(argv: list[str] | None = None) -> int:
             got = ",".join(str(i) for i in cue.ranked_ids)
             print(
                 f"- [{scenario_name}] '{cue.cue}' expected [{expected}] got [{got}] "
-                f"(recall={cue.recall:.2f}, violations={cue.violations})"
+                f"(recall={cue.recall:.2f}, violations={cue.violations}, "
+                f"version_ok={cue.semantic_version_ok})"
             )
         print()
 

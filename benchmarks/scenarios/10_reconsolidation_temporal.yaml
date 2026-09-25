@@ -1,0 +1,21 @@
+# Benchmark 2 (full): temporal contradiction drives reconsolidation.  Three
+# positive episodes consolidate into a belief; a later correction must
+# evolve it to version 2 (temporal narrative) with the conflict recorded.
+name: reconsolidation_temporal
+tags: [reconsolidation]
+consolidate: true
+episodes:
+  - text: "用户喜欢 Java，每天写 Spring 项目"
+    days_ago: 60
+  - text: "用户在深入学习 Java 虚拟机调优"
+    days_ago: 45
+  - text: "用户用 Java 完成了一个大项目"
+    days_ago: 30
+later_episodes:
+  - text: "用户说其实不想做 Java 了，打算转 AI 方向"
+    days_ago: 2
+cues:
+  - text: "用户对 Java 的态度"
+    expect_concepts: ["java"]
+    expect_version: 2
+    k: 5

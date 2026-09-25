@@ -163,7 +163,7 @@ def seed_report():
 
 
 def test_seed_scenario_count(seed_report):
-    assert len(seed_report.scenarios) == 9
+    assert len(seed_report.scenarios) == 10
 
 
 def test_seed_no_forbidden_leaks(seed_report):

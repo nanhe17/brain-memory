@@ -112,10 +112,12 @@ class SemanticStore:
         evidence_ids: list[int],
         embedding: np.ndarray,
         change_reason: str,
+        metadata: dict | None = None,
     ) -> SemanticMemory:
         now = _now_iso()
         new_version = existing.version + 1
         vector = np.asarray(embedding, dtype=np.float32).reshape(-1)
+        merged_metadata = {**(existing.metadata or {}), **(metadata or {})}
         self._db.update_semantic(
             existing.id,
             kind=kind.value,
@@ -126,6 +128,7 @@ class SemanticStore:
             version=new_version,
             embedding=vector.tobytes(),
             embedding_dim=int(vector.shape[0]),
+            metadata=merged_metadata,
         )
         self._db.insert_memory_version(
             semantic_id=existing.id,

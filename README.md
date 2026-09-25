@@ -98,6 +98,42 @@ Design properties:
   `MEMORY_SEMANTIC_RECALL_LIMIT` so knowledge never floods episodic recall.
 - **Evidence preserved**: consolidation never touches the episodes.
 
+## What Phase 4 adds: reconsolidation
+
+Beliefs evolve.  When new evidence challenges a consolidated statement, the
+memory is re-examined and rewritten as a *temporal narrative* — never silently
+overwritten, never deleted:
+
+- **Encode-time challenge** (reconsolidation entry, doc §15): an episode with
+  a correction signal ("其实…", "not … anymore") that hits a known concept —
+  or the single semantic memory currently in working memory — opens a
+  conflict record and forces that concept's reconsolidation.  The challenge
+  edits nothing by itself; evidence is weighed at reconsolidation time.
+- **Consolidation-time classification**: every update of an existing belief
+  is classified (`consistent / contradiction / evolution / correction /
+  context_change`).  A non-consistent verdict produces a temporal-narrative
+  statement ("用户过去长期深入 Java 后端，但近期兴趣已转向 AI 方向") plus a
+  resolved conflict record; `consistent` merely refines and dismisses
+  unsubstantiated challenges.
+- **Without an LLM**: the deterministic path tracks preference polarity
+  (positive/negative/mixed from the parser's marker lexicons, recorded per
+  version).  A dominant-sign shift deterministically yields an evolution
+  statement ("态度信号出现变化：此前以正面为主…近期以负面为主…").
+- **Gates**: rewriting an existing belief needs `MEMORY_RECONSOLIDATION_MIN_SUPPORT`
+  (default 2) supporting episodes — enforced on deterministic ground in the
+  orchestrator, never inside the LLM adapter.
+- **Everything is inspectable**: `engine.conflicts()`,
+  `engine.inspect_semantic(id)` (statement + evidence + versions + conflicts),
+  `engine.reconsolidate(id)` for manual forcing, `stats().open_conflicts`,
+  demo `/conflicts`.
+
+```python
+report = engine.consolidate()          # conflict-driven groups run first
+for conflict in report.conflicts:
+    print(f"S-{conflict.semantic_id} {conflict.kind.value}: "
+          f"was: {conflict.statement_before}")
+```
+
 ## Quick start
 
 ```bash
@@ -229,7 +265,7 @@ frequency, CJK-aware FTS indexing, heuristic-first importance scoring.
 
 ```bash
 pip install -e '.[dev]'
-pytest                 # 132 tests
+pytest                 # 149 tests
 ```
 
 Tests cover parsing, embeddings, storage, ranking, retrieval, working memory,
@@ -243,9 +279,9 @@ transport), and the evaluation harness.
 | 1 | episodic + working memory + hybrid retrieval + API | ✅ |
 | 2 | eval harness + weight sweep, LLM query expansion, blind rerank fusion, session-entity boost | ✅ |
 | 3 | replay → semantic memory consolidation, versioning, unified recall | ✅ |
-| 4 | reconsolidation: conflict detection, memory evolution | tables ready |
+| 4 | reconsolidation: conflict detection, temporal-narrative evolution | ✅ |
 | 5 | decay scheduler, memory strength, archive GC | soft delete done |
-| 6-7 | memory graph, inspector UI, full benchmark suite | planned |
+| 6-7 | memory graph (conflicts are pre-shaped edges), inspector UI | planned |
 
 ## License
 

@@ -49,6 +49,47 @@ class SemanticKind(str, Enum):
     GENERALIZATION = "generalization"
 
 
+class ConflictKind(str, Enum):
+    """How new evidence relates to an existing semantic memory (doc §16).
+
+    Conflicts are signals of memory evolution, not errors.  UNRESOLVED marks
+    an encode-time challenge that reconsolidation has not classified yet.
+    """
+
+    CONTRADICTION = "contradiction"
+    EVOLUTION = "evolution"
+    CORRECTION = "correction"
+    CONTEXT_CHANGE = "context_change"
+    UNRESOLVED = "unresolved"
+
+
+class ConflictStatus(str, Enum):
+    OPEN = "open"
+    RESOLVED = "resolved"
+    DISMISSED = "dismissed"
+
+
+class MemoryConflict(BaseModel):
+    """A recorded clash between new evidence and an existing belief.
+
+    Designed to become Memory-Graph edges (Phase 6): both endpoints (semantic
+    memory + triggering episode) and the direction are already here.
+    """
+
+    id: int
+    semantic_id: int
+    kind: ConflictKind = ConflictKind.UNRESOLVED
+    status: ConflictStatus = ConflictStatus.OPEN
+    old_version: int
+    statement_before: str | None = None
+    trigger_episode_id: int | None = None
+    trigger_kind: str = "consolidation"  # encode | consolidation | manual
+    detected_at: datetime
+    resolution_version: int | None = None
+    resolved_at: datetime | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class ExtractedExperience(BaseModel):
     """Structured output of an ExperienceParser — the system's data contract."""
 
@@ -149,13 +190,22 @@ class MemoryVersion(BaseModel):
 
 
 class PatternProposal(BaseModel):
-    """A consolidator's candidate knowledge statement for one concept group."""
+    """A consolidator's candidate knowledge statement for one concept group.
+
+    ``change_kind`` is the reconsolidation verdict against the existing
+    statement ("consistent" = plain refinement); ``metadata`` carries
+    deterministic signals such as preference-polarity counts.
+    """
 
     concept: str
     statement: str
     kind: SemanticKind = SemanticKind.CO_OCCURRENCE
     confidence: float = Field(ge=0.0, le=1.0)
     supporting_indexes: list[int] = Field(default_factory=list)
+    change_kind: Literal[
+        "consistent", "contradiction", "evolution", "correction", "context_change"
+    ] = "consistent"
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class RecallResult(BaseModel):
@@ -194,6 +244,9 @@ class RecallResult(BaseModel):
 class EncodeResult(BaseModel):
     episode: Episode
     duplicate: bool = False
+    # Set when this episode's correction signals challenge an existing
+    # semantic memory (reconsolidation entry, doc §15).
+    challenge: "MemoryConflict | None" = None
 
 
 class WorkingMemoryState(BaseModel):
@@ -217,6 +270,7 @@ class EngineStats(BaseModel):
     oldest_created_at: datetime | None = None
     newest_created_at: datetime | None = None
     semantic_memories: int = 0
+    open_conflicts: int = 0
 
 
 class ConsolidationReport(BaseModel):
@@ -226,6 +280,7 @@ class ConsolidationReport(BaseModel):
     created: list[SemanticMemory] = Field(default_factory=list)
     updated: list[SemanticMemory] = Field(default_factory=list)
     skipped: list[str] = Field(default_factory=list)  # "group_key: reason"
+    conflicts: list[MemoryConflict] = Field(default_factory=list)
 
     @property
     def touched(self) -> list[SemanticMemory]:

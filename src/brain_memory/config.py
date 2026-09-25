@@ -76,6 +76,10 @@ class MemoryConfig(BaseModel):
     consolidation_min_support: int = Field(default=3, ge=1)
     # Cap on semantic hits inside one recall (they must not flood episodic recall).
     semantic_recall_limit: int = Field(default=3, ge=0)
+    # ---- Phase 4: reconsolidation ----
+    # Supporting episodes needed to rewrite an existing belief (lower than
+    # initial consolidation: reconsolidation is reactive and anchored).
+    reconsolidation_min_support: int = Field(default=2, ge=1)
 
     @classmethod
     def from_env(cls, env_file: str | os.PathLike | None = None) -> "MemoryConfig":
@@ -128,4 +132,5 @@ class MemoryConfig(BaseModel):
             rerank_timeout=float(get("RERANK_TIMEOUT", "8")),
             consolidation_min_support=int(get("CONSOLIDATION_MIN_SUPPORT", "3")),
             semantic_recall_limit=int(get("SEMANTIC_RECALL_LIMIT", "3")),
+            reconsolidation_min_support=int(get("RECONSOLIDATION_MIN_SUPPORT", "2")),
         )

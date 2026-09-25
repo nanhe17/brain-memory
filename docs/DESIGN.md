@@ -197,6 +197,59 @@ Provenance is what makes `inspect_semantic` (statement + evidence + versions)
 an honest answer to "why do you believe this" — destroying the evidence to
 save space is Phase 5 decay's job, driven by access statistics.
 
+## Phase 4 decisions
+
+### Two trigger layers: challenge at encode, verdict at consolidation
+
+The neuroscience sequence — reactivation makes a memory labile, new evidence
+is then weighed — maps to two distinct mechanisms.  At **encode time**, an
+episode carrying a correction signal that hits a known concept (or the single
+semantic memory currently in working memory) opens an *open conflict record*
+and forces that concept's reconsolidation; the challenge itself edits nothing
+— no statement change, no confidence penalty — because detection is not
+adjudication.  At **consolidation time**, every update of an existing belief
+is classified before it is applied.  Splitting detection from adjudication
+keeps reactions fast without letting a single sentence rewrite knowledge.
+
+### Temporal narratives, not overwrites
+
+On a non-"consistent" verdict the new statement must preserve the history
+("用户过去长期深入 Java 后端，但近期兴趣已转向 AI 方向") — the doc §13 shape.
+The old statement is never erased: it remains in `memory_versions`, in the
+conflict record's `statement_before`, and in the narrative itself.
+
+### The deterministic path counts polarity; it does not pretend to understand
+
+Preference direction per supporting episode (positive/negative/mixed, from
+the parser's marker lexicons; negative markers are scrubbed before the
+positive check so 「不喜欢」 is not miscounted as 「喜欢」) is recorded in each
+version's metadata.  A dominant-sign shift across versions — over the three
+signs pos/neg/mixed, with a first observation never counting as a shift —
+deterministically produces an evolution statement with the before/after
+tally embedded.  Subtler conflicts wait for the LLM path; the deterministic
+path states only what it counted.
+
+### The support gate lives in the orchestrator, not the LLM adapter
+
+Reconsolidation uses a lower threshold than initial consolidation (2 vs 3,
+configurable): it is reactive, anchored on an existing belief, and often
+triggered by an explicit user correction.  Crucially, the gate is enforced
+in `Consolidator._repropose` on deterministic ground — an LLM adapter (or
+any duck-typed stand-in) cannot bypass it.  This was not free: the first
+implementation trusted the adapter, and a test with a misbehaving mock
+walked straight through.
+
+### Conflicts are records now, graph edges later
+
+`memory_conflicts` stores both endpoints (semantic memory + triggering
+episode), the pre-state (`old_version`, `statement_before`), and the
+resolution — exactly the shape a `contradicts`/`updates` edge needs.  Open
+conflicts force their concept's group due on every consolidate run; resolved
+and dismissed records stay as history.  Open conflicts never degrade recall
+ranking — they are visible through `inspect_semantic` / `conflicts()` /
+`stats().open_conflicts`, and punishment, if any, is the reconsolidation's
+job.
+
 ## Known limitations (accepted for Phase 1)
 
 - Heuristic entity extraction misses bare lowercase latin tokens (e.g.

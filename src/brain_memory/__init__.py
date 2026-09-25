@@ -13,12 +13,15 @@ Quick start::
 from brain_memory.config import MemoryConfig, RetrievalWeights
 from brain_memory.engine import MemoryEngine
 from brain_memory.models import (
+    ConflictKind,
+    ConflictStatus,
     ConsolidationReport,
     EncodeResult,
     EngineStats,
     Episode,
     ExtractedExperience,
     FactorScores,
+    MemoryConflict,
     MemoryStatus,
     MemoryVersion,
     PatternProposal,
@@ -36,6 +39,9 @@ __all__ = [
     "MemoryConfig",
     "RetrievalWeights",
     "WorkingMemory",
+    "ConflictKind",
+    "ConflictStatus",
+    "MemoryConflict",
     "ConsolidationReport",
     "EncodeResult",
     "EngineStats",
