@@ -7,8 +7,9 @@
   逐条写出的原因相同，且每列在插入时都显式赋值（不需要 DEFAULT 子句）。
 * 写路径串行化在一把锁之后（Phase 1 即明确的单写者假设；PostgreSQL 之后
   可以在同一接口下替换）。
-* FTS5 提供关键词检索，零额外依赖。FTS 表由情景存储手动同步
-  （insert/delete）。
+* FTS5 提供关键词检索，零额外依赖。情景 FTS 表只在写入时手动同步
+  （insert）；归档/遗忘不删 FTS 行，而是在读取时按状态过滤（见
+  EpisodicStore.fts_search）——所以 restore() 能原样带回可检索行。
 * ``episode_tags`` 是实体/话题索引，用于元数据过滤与后续巩固分组。
 * ``semantic_memories`` 现在就建表（Phase 3 写入），避免巩固落地时
   schema 来回变更。

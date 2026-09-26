@@ -21,11 +21,13 @@ from brain_memory.retrieval.vector_index import VectorIndex
 
 
 def build_fts_match_expr(cue: ExtractedExperience) -> str:
-    """构造"引号短语 OR"形式的 MATCH 表达式。
+    """构造"引号短语 OR"形式的 MATCH 表达式（只含拉丁词元）。
 
-    索引侧把中文字符空格分隔存储（unicode61 分词器没有 CJK 分词能力），
-    查询侧对每段中文连读加引号——查询解析器随后产出单字符词元短语，
-    与索引中的相邻单字符词元匹配。
+    实现细节：_LATIN_RE 抽出拉丁词（正文与实体）逐个加引号；而
+    _CJK_RE 匹配的是单个中文字，`len(run) >= 2` 的门槛会把它们全部
+    丢弃——中文词永远进不了表达式。因此关键词通道实际只对拉丁词（如
+    "minecraft"）生效，中文召回主要依赖向量通道。若将来要支持中文关
+    键词，需同时调整分词（查询侧连读成短语）与索引侧写入。
     """
     terms: list[str] = []
     for token in ranking._LATIN_RE.findall(cue.content.lower()):

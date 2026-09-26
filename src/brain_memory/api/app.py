@@ -57,7 +57,7 @@ def create_app(engine: MemoryEngine | None = None) -> "FastAPI":  # noqa: F821
 
     @app.post("/encode")
     def encode(request: EncodeRequest) -> dict:
-        """编码一段经验（含挑战检测）。"""
+        """编码一段经验（引擎侧会做挑战检测，但当前响应未透出 challenge）。"""
         result = engine.encode(request.text, source=request.source, context=request.context)
         return {"episode": _episode_dump(result.episode), "duplicate": result.duplicate}
 
