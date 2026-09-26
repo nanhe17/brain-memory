@@ -1,9 +1,8 @@
-"""Weight sweeps: search the 7-factor simplex for better retrieval weights.
+"""权重扫参：在 7 因子单纯形中搜索更好的检索权重。
 
-Random search over a Dirichlet sample of the weight simplex (plus the current
-default) — with 7 factors, grid search is dead on arrival, and random search
-with a fixed seed is reproducible.  Ranking key: mean recall@k, then MRR,
-then fewer violations.
+对权重单纯形做固定种子的 Dirichlet 随机采样（外加当前默认）——7 个
+维度上网格搜索没有希望，随机搜索可复现。排序键：平均 Recall@k、
+然后 MRR、然后更少的违规数。
 """
 
 from __future__ import annotations
@@ -21,19 +20,24 @@ _FACTOR_FIELDS = ("semantic", "keyword", "recency", "importance", "frequency", "
 
 @dataclass
 class SweepCandidate:
+    """一组权重及其评测报告。"""
+
     weights: RetrievalWeights
     report: EvalReport
 
     @property
     def sort_key(self) -> tuple[float, float, int]:
+        """排序键（recall, mrr, -violations）。"""
         return (self.report.recall, self.report.mrr, -self.report.violations)
 
 
 def _weights_from_vector(vector: np.ndarray) -> RetrievalWeights:
+    """单纯形向量 -> 权重对象。"""
     return RetrievalWeights(**dict(zip(_FACTOR_FIELDS, (float(x) for x in vector))))
 
 
 def sample_weights(rng: np.random.Generator) -> RetrievalWeights:
+    """从权重单纯形随机采样一组权重。"""
     return _weights_from_vector(rng.dirichlet(np.ones(len(_FACTOR_FIELDS))))
 
 
@@ -45,7 +49,7 @@ def sweep(
     k: int = 5,
     seed: int = 2026,
 ) -> list[SweepCandidate]:
-    """Evaluate the current weights plus ``samples`` random weight vectors."""
+    """评估当前权重外加 ``samples`` 组随机权重向量。"""
     rng = np.random.default_rng(seed)
     candidates: list[SweepCandidate] = []
 
@@ -64,7 +68,7 @@ def sweep(
 
 
 def export_env(weights: RetrievalWeights) -> str:
-    """``MEMORY_W_*`` export lines for a weight vector."""
+    """把权重导出为 ``MEMORY_W_*`` export 行。"""
     names = {
         "semantic": "MEMORY_W_SEMANTIC",
         "keyword": "MEMORY_W_KEYWORD",

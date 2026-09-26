@@ -1,8 +1,7 @@
-"""Embedding providers.
+"""嵌入 providers。
 
-The engine only ever sees the :class:`EmbeddingProvider` protocol.  Vectors
-are L2-normalized so cosine similarity is a dot product, and stored as
-float32 BLOBs in SQLite.
+引擎只看得到 :class:`EmbeddingProvider` 协议。向量在写入时做 L2 归一化
+（余弦相似度退化为点积），以 float32 BLOB 形式存入 SQLite。
 """
 
 from brain_memory.embeddings.base import EmbeddingError, EmbeddingProvider, normalize_rows

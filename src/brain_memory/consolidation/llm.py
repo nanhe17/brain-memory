@@ -1,11 +1,9 @@
-"""LLM-backed pattern proposal for one concept group.
+"""LLM 驱动的概念组模式提案。
 
-One chat call per group: the LLM sees the concept and the (truncated)
-episodes and must return a statement *plus the indexes of the episodes that
-genuinely support it*.  The engine enforces the support threshold on that
-subset — an LLM that over-generalizes from one episode simply fails the
-quality gate.  Transport/parse failures raise; the engine falls back to the
-deterministic consolidator.
+每个组一次 chat 调用：LLM 看到概念和（截断的）episode，必须返回陈述
+*以及真正支持它的 episode 索引*。引擎在确定性代码里对支持子集执行
+阈值门——从单条 episode 过度概括的 LLM 直接过不了质量门。传输/解析
+失败抛错，引擎降级到确定性巩固器。
 """
 
 from __future__ import annotations
@@ -43,6 +41,8 @@ Rules:
 
 
 class LLMConsolidator:
+    """LLM 巩固器：新概念提案 + 既有信念的再巩固裁决。"""
+
     def __init__(
         self,
         *,
@@ -69,8 +69,7 @@ class LLMConsolidator:
         *,
         min_support: int,
     ) -> PatternProposal | None:
-        """Raises on transport/parse failure; returns None when the LLM finds
-        no pattern that meets the support threshold."""
+        """新概念提案：传输/解析失败抛错；LLM 找不到满足阈值的模式返回 None。"""
         window = episodes[: self.max_episodes]
         lines = [
             f"[{index}] ({episode.created_at:%Y-%m-%d}) {episode.content[: self.content_chars]}"
@@ -99,6 +98,7 @@ class LLMConsolidator:
 
         statement = str(data.get("statement", "")).strip()
         supporting = _valid_indexes(data.get("supporting"), len(window))
+        # 空陈述或支持不足：没有可成型的知识
         if not statement or len(supporting) < min_support:
             return None
 
@@ -115,7 +115,6 @@ class LLMConsolidator:
             supporting_indexes=supporting,
         )
 
-
     def repropose(
         self,
         concept: str,
@@ -124,11 +123,10 @@ class LLMConsolidator:
         *,
         min_support: int,
     ) -> PatternProposal | None:
-        """Reconsolidation verdict for an existing semantic memory.
+        """既有语义记忆的再巩固裁决。
 
-        Raises on transport/parse failure; returns None when the evidence is
-        too thin to meet the reconsolidation threshold (the old statement
-        then stays untouched).
+        传输/解析失败抛错；证据太薄过不了阈值返回 None（旧陈述保持
+        不动）。
         """
         window = episodes[: self.max_episodes]
         lines = [
@@ -185,6 +183,7 @@ class LLMConsolidator:
 
 
 def _valid_indexes(value, limit: int) -> list[int]:
+    """校验 LLM 返回的支持索引：整数、在范围内、去重。"""
     if not isinstance(value, list):
         return []
     indexes = []
@@ -195,6 +194,7 @@ def _valid_indexes(value, limit: int) -> list[int]:
 
 
 def _extract_json(raw: str) -> dict:
+    """稳健 JSON 提取：剥代码围栏、截取最外层大括号。"""
     raw = raw.strip()
     if raw.startswith("```"):
         raw = raw.strip("`")

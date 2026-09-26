@@ -1,10 +1,8 @@
-"""Consolidation: replay + pattern extraction → semantic memories.
+"""巩固：重放 + 模式提取 → 语义记忆。
 
-Deterministic grouping over the entity/topic index (never embedding
-clustering), an honest statistical proposal when no LLM is configured, an
-LLM proposal with a support-count quality gate when one is, structural
-concept-keyed upserts with a full version trail, and incremental state so
-only groups with new evidence are reprocessed.
+基于实体/话题索引的确定性分组（绝不使用 embedding 聚类）、无 LLM 时
+诚实的统计型提案、有 LLM 时带支持数质量门的 LLM 提案、结构化概念键
+upsert 与完整版本链，以及"只有新证据的组才会被重处理"的增量状态。
 """
 
 from brain_memory.consolidation.consolidator import Consolidator

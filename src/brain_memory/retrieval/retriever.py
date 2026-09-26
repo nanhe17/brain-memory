@@ -1,10 +1,9 @@
-"""Hybrid retrieval: vector + keyword channels, union, factor scoring, rank.
+"""混合检索：向量 + 关键词双通道，并集、因子打分、排序。
 
-Design: the two channels are *candidate generators* (recall-oriented); the
-normalized multi-factor scorer then ranks the union (precision-oriented).
-This is the same shape as the design doc's "Retrieval Engine" and keeps each
-channel simple: the vector channel covers paraphrase, the keyword channel
-covers exact terms and rare entities that embeddings blur together.
+设计：两条通道是*候选生成器*（面向召回）；归一化多因子打分器随后对
+并集排序（面向精度）。这与设计文档的"Retrieval Engine"同构，并让每条
+通道保持简单：向量通道覆盖转述改写，关键词通道覆盖精确词与嵌入会
+模糊掉的稀有实体。
 """
 
 from __future__ import annotations
@@ -22,11 +21,11 @@ from brain_memory.retrieval.vector_index import VectorIndex
 
 
 def build_fts_match_expr(cue: ExtractedExperience) -> str:
-    """Build an OR-of-quoted-phrases MATCH expression.
+    """构造"引号短语 OR"形式的 MATCH 表达式。
 
-    The index side stores CJK characters space-separated (unicode61 has no CJK
-    segmentation), and the query side quotes each run — the query parser then
-    produces single-char token phrases, which match the indexed adjacency.
+    索引侧把中文字符空格分隔存储（unicode61 分词器没有 CJK 分词能力），
+    查询侧对每段中文连读加引号——查询解析器随后产出单字符词元短语，
+    与索引中的相邻单字符词元匹配。
     """
     terms: list[str] = []
     for token in ranking._LATIN_RE.findall(cue.content.lower()):
@@ -40,20 +39,21 @@ def build_fts_match_expr(cue: ExtractedExperience) -> str:
     for run in ranking._CJK_RE.findall(cue.content):
         if len(run) >= 2:
             quoted.append(_quote(run))
-    # dedup, keep order
+    # 去重并保持顺序
     seen: set[str] = set()
     unique = [q for q in quoted if not (q in seen or seen.add(q))]
     return " OR ".join(unique)
 
 
 def _quote(term: str) -> str:
+    """FTS5 引号包裹，内部引号双写转义。"""
     return '"' + term.replace('"', '""') + '"'
 
 
 def passes_filters(episode, source: str | None, time_from: datetime | None,
                    time_to: datetime | None, require_entities: list[str] | None) -> bool:
-    """Shared recall filter — also applied to graph-expanded candidates so
-    expansion can never leak memories the caller filtered out."""
+    """召回共用过滤器——图扩展的候选同样适用，因此扩展永远不会泄漏
+    被调用方过滤掉的记忆。"""
     if not episode.is_active:
         return False
     if source is not None and episode.source != source:
@@ -71,7 +71,7 @@ def passes_filters(episode, source: str | None, time_from: datetime | None,
 
 
 def semantic_view(memory):
-    """Episode-shaped read-only view of a semantic memory (see RecallResult)."""
+    """语义记忆的 Episode 形只读视图（见 RecallResult）。"""
     return Episode(
         id=memory.id,
         content=memory.statement,
@@ -89,6 +89,8 @@ def semantic_view(memory):
 
 
 class Retriever:
+    """混合检索器：情景通道 + 语义通道。"""
+
     def __init__(
         self,
         store: EpisodicStore,
@@ -115,20 +117,21 @@ class Retriever:
         require_entities: list[str] | None = None,
         entity_boost: list[str] | None = None,
     ) -> list[RecallResult]:
-        """Rank candidates for one or more cue variants (e.g. original + LLM
-        expansion).  Channels union across variants: semantic takes the max
-        similarity, keyword the best (lowest) bm25 rank.
+        """为一个或多个 cue 变体（如原文 + LLM 扩展）排序候选。
 
-        ``entity_boost`` feeds the entity-overlap *factor* only — it never
-        becomes a query term.  Session entities bias ranking toward memories
-        related to what the agent is currently doing without widening the
-        candidate channels (query terms come from the variants alone).
+        通道在各变体间取并集：语义相似取最大值，关键词取最好的（最小
+        的）bm25 rank。
+
+        ``entity_boost`` 只喂给实体重叠*因子*——绝不会变成查询词。会话
+        实体让排序偏向当前任务相关的记忆，同时不拓宽候选通道（查询词
+        只来自变体本身）。
         """
         k = k or self._config.default_top_k
         pool = self._config.candidate_pool_per_channel
         now = datetime.now(timezone.utc)
 
-        candidates: dict[int, tuple[float, float]] = {}  # id -> (best semantic, best bm25 rank)
+        # 双通道并集收集候选：id -> (最好语义相似度, 最好 bm25 rank)
+        candidates: dict[int, tuple[float, float]] = {}
         for variant, vector in zip(cue_variants, vectors):
             for episode_id, similarity in self._index.search(vector, pool):
                 best_sim, best_rank = candidates.get(episode_id, (-1.0, math.inf))
@@ -141,6 +144,7 @@ class Retriever:
         if not candidates:
             return []
 
+        # 因子集合：跨变体取并集（扩展解析出指代 -> P-51 时能纠正方向）
         cue_entities: set[str] = set()
         cue_context: set[str] = set()
         for variant in cue_variants:
@@ -157,6 +161,7 @@ class Retriever:
             source=source, time_from=time_from, time_to=time_to,
             require_entities=require_entities,
         )
+        # 未接语义通道时直接返回情景结果
         if self._semantic_store is None or self._semantic_index is None:
             episodic.sort(key=lambda result: -result.score)
             return episodic[:k]
@@ -167,7 +172,7 @@ class Retriever:
         merged = self._merge_with_cap(episodic, semantic)
         return merged[:k]
 
-    # -- episodic channel ---------------------------------------------------------
+    # -- 情景通道 ---------------------------------------------------------
 
     def _rank_episodic(
         self,
@@ -181,6 +186,7 @@ class Retriever:
         time_to: datetime | None,
         require_entities: list[str] | None,
     ) -> list[RecallResult]:
+        """情景候选打分（不做截断，交给上层合并）。"""
         episodes = self._store.get_many(list(candidates.keys()))
         episodes = [
             episode
@@ -212,7 +218,7 @@ class Retriever:
             )
         return results
 
-    # -- semantic channel ------------------------------------------------------------
+    # -- 语义通道 ------------------------------------------------------------
 
     def _rank_semantic(
         self,
@@ -223,6 +229,7 @@ class Retriever:
         now: datetime,
         pool: int,
     ) -> list[RecallResult]:
+        """语义记忆候选：语义向量 + 语义 FTS，同样双通道取并集。"""
         candidates: dict[int, tuple[float, float]] = {}
         for variant, vector in zip(cue_variants, vectors):
             for semantic_id, similarity in self._semantic_index.search(vector, pool):
@@ -269,8 +276,8 @@ class Retriever:
     def _merge_with_cap(
         self, episodic: list[RecallResult], semantic: list[RecallResult]
     ) -> list[RecallResult]:
-        """Interleave both channels by score, but never let semantic memories
-        flood the recall list (``semantic_recall_limit``)."""
+        """两通道按得分交错合并，但语义记忆绝不能淹没召回列表
+        （``semantic_recall_limit``）。"""
         merged = [*episodic, *semantic]
         merged.sort(key=lambda result: -result.score)
         kept: list[RecallResult] = []
@@ -282,4 +289,3 @@ class Retriever:
                 semantic_kept += 1
             kept.append(result)
         return kept
-

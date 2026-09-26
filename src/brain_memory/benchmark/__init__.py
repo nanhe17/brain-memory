@@ -1,6 +1,6 @@
-"""Long-horizon scale benchmark (design doc, Benchmark 5).
+"""长程规模基准（设计文档 Benchmark 5）。
 
-Run via ``python -m brain_memory.benchmark.long_horizon`` or the
-``brain-memory-benchmark`` console script.  The module is deliberately not
-imported here so ``python -m`` execution stays warning-free.
+通过 ``python -m brain_memory.benchmark.long_horizon`` 或
+``brain-memory-benchmark`` console script 运行。模块刻意不在本文件
+导入，保证 ``python -m`` 执行时无 runpy 警告。
 """

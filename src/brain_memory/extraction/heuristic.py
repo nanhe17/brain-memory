@@ -1,17 +1,16 @@
-"""Deterministic, zero-dependency experience parser.
+"""确定性、零依赖的经验解析器。
 
-This is the default parser and the system's ground truth: it never calls a
-network, never fails on odd input, and always produces the same output for
-the same input.  It is deliberately conservative:
+这是默认解析器，也是系统的事实基准：不访问网络、不在异常输入上失败、
+相同输入永远产出相同输出。刻意保持保守：
 
-* entities — quoted spans, known tech lexicon (latin + CJK), CamelCase /
-  alphanumeric tokens; noisy generic words are stoplisted;
-* topics — lexicon-canonical tags;
-* key facts — sentences carrying fact markers;
-* importance / confidence — additive heuristics over emphasis signals.
+* 实体——引号片段、已知技术词典（拉丁 + 中文）、驼峰/含数字词元；
+  噪声大的通用词进停用词表；
+* 话题——词典规范化的标签；
+* 关键事实——携带事实标记词的句子；
+* 重要性/置信度——对强调信号做加法启发式。
 
-An LLM parser can refine all of this later (see ``llm.py``), but the system
-must stay useful with heuristics alone (design doc, Principle 5).
+LLM 解析器之后可以全面精炼（见 ``llm.py``），但系统必须只用启发式就
+保持可用（设计文档原则 5）。
 """
 
 from __future__ import annotations
@@ -21,8 +20,9 @@ from datetime import datetime, timezone
 
 from brain_memory.extraction.base import ExtractedExperience
 
-# --- lexicons ---------------------------------------------------------------
+# --- 词典 -------------------------------------------------------------------
 
+# 拉丁技术词（小写匹配）
 _LATIN_LEXICON = {
     "python", "java", "javascript", "typescript", "rust", "golang", "c++", "c#",
     "spring", "spring boot", "mysql", "postgres", "postgresql", "sqlite", "redis",
@@ -33,6 +33,7 @@ _LATIN_LEXICON = {
     "unreal", "blender", "zcode", "openai", "glm", "zhipu", "p51", "mustang",
 }
 
+# 中文概念词（子串匹配）
 _CJK_LEXICON = [
     "飞机", "模组", "游戏", "服务器", "数据库", "向量", "嵌入", "智能体", "代理",
     "记忆", "情景记忆", "语义记忆", "工作记忆", "巩固", "遗忘", "检索", "项目",
@@ -44,6 +45,7 @@ _CJK_TERM_RE = re.compile(r"[\u4e00-\u9fff]+")
 _LATIN_TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9+#.\-]*")
 _QUOTED_RE = re.compile(r"[\"“”「『']([^\"“”」』']{1,40})[\"“”」』']")
 
+# 事实标记词：出现在句中即视为"事实陈述"
 _FACT_MARKERS = [
     "是", "有", "喜欢", "讨厌", "想要", "打算", "决定", "完成", "需要", "觉得",
     "认为", "在学", "正在", "已经", "计划", "用", "做了", "要", "不想", "偏好",
@@ -51,8 +53,10 @@ _FACT_MARKERS = [
     "learning", "working on", "plan",
 ]
 
+# 偏好标记词（Phase 4 极性统计复用）
 _PREFERENCE_MARKERS = ["喜欢", "讨厌", "偏好", "不想", "love", "hate", "like", "prefer", "dislike"]
 
+# 强调信号模式：显式记忆请求 / 重要标记 / 纠正 / 疑问
 _SIGNAL_PATTERNS = [
     ("explicit_remember", re.compile(r"记住|记一下|别忘|remember|don't forget|do not forget", re.I)),
     ("importance_marker", re.compile(r"重要|关键|critical|important", re.I)),
@@ -71,11 +75,12 @@ _STOPWORDS = {
 
 
 def _clamp(value: float, low: float, high: float) -> float:
+    """数值截断到 [low, high]。"""
     return max(low, min(high, value))
 
 
 class HeuristicExperienceParser:
-    """Deterministic parser; see module docstring for the strategy."""
+    """确定性解析器；策略见模块 docstring。"""
 
     def parse(
         self,
@@ -85,6 +90,8 @@ class HeuristicExperienceParser:
         context: str | None = None,
         timestamp: datetime | None = None,
     ) -> ExtractedExperience:
+        """解析主流程：清洗 → 实体/话题/事实/信号 → 重要性/置信度打分。"""
+        # 规范化空白，空文本直接拒绝（调用方决定如何降级）
         content = " ".join((text or "").split())
         if not content:
             raise ValueError("cannot parse empty experience text")
@@ -111,13 +118,15 @@ class HeuristicExperienceParser:
             timestamp=timestamp or datetime.now(timezone.utc),
         )
 
-    # -- entities ------------------------------------------------------------
+    # -- 实体提取 ------------------------------------------------------------
 
     def _extract_entities(self, content: str) -> list[str]:
+        """实体提取：引号片段 → 中文词典 → 拉丁词元（词典/驼峰/含数字）。"""
         found: list[str] = []
         seen: set[str] = set()
 
         def add(value: str) -> None:
+            # 清理边缘标点；大小写折叠去重；停用词与过短词排除
             value = value.strip().strip(".,;:!?，。；：！？")
             key = value.casefold()
             if len(value) < 2 or key in seen or key in _STOPWORDS:
@@ -125,13 +134,16 @@ class HeuristicExperienceParser:
             seen.add(key)
             found.append(value)
 
+        # 1) 引号片段是最强信号，直接采信
         for match in _QUOTED_RE.finditer(content):
             add(match.group(1))
 
+        # 2) 中文词典命中
         for term in _CJK_LEXICON:
             if term in content:
                 add(term)
 
+        # 3) 拉丁词元：词典命中 / 驼峰 / 含数字
         for match in _LATIN_TOKEN_RE.finditer(content):
             token = match.group(0)
             key = token.lower().rstrip(".-")
@@ -146,7 +158,9 @@ class HeuristicExperienceParser:
         return found
 
     def _extract_topics(self, lower_content: str) -> list[str]:
+        """话题提取：拉丁词典按词边界匹配 + 中文词典子串匹配。"""
         topics: list[str] = []
+        # sorted 保证跨进程顺序确定（set 迭代序受哈希随机化影响）
         for term in sorted(_LATIN_LEXICON):
             if re.search(rf"\b{re.escape(term)}\b", lower_content):
                 topics.append(term)
@@ -155,9 +169,10 @@ class HeuristicExperienceParser:
                 topics.append(term)
         return topics
 
-    # -- facts & signals -------------------------------------------------------
+    # -- 事实与信号 -------------------------------------------------------
 
     def _extract_key_facts(self, content: str, entities: list[str]) -> list[str]:
+        """关键事实：按事实标记词 + 实体命中数给句子打分，取前 3 句。"""
         sentences = [s.strip() for s in re.split(r"[.!?。！？;\n;]+", content) if s.strip()]
         scored: list[tuple[int, str]] = []
         for sentence in sentences:
@@ -172,12 +187,14 @@ class HeuristicExperienceParser:
         return [sentence for _, sentence in scored[:3]]
 
     def _detect_signals(self, content: str, entities: list[str]) -> list[tuple[str, float]]:
+        """强调信号检测（纠正/重要/疑问/感叹/实体重复）。"""
         signals: list[tuple[str, float]] = []
         for name, pattern in _SIGNAL_PATTERNS:
             if pattern.search(content):
                 signals.append((name, 1.0))
         if any(ch in content for ch in ("!", "！")):
             signals.append(("exclamation", 1.0))
+        # 出现 ≥2 次的实体视为"被强调"
         repeated = [
             entity
             for entity in entities
@@ -187,10 +204,11 @@ class HeuristicExperienceParser:
             signals.append((f"repetition:{entity}", 1.0))
         return signals
 
-    # -- scoring -----------------------------------------------------------------
+    # -- 打分 -----------------------------------------------------------------
 
     def _score_importance(self, signals: list[tuple[str, float]], entities: list[str],
                           lower: str) -> float:
+        """重要性启发式：基线 0.3，按强调信号加权；纯提问降权。"""
         names = {name for name, _ in signals}
         importance = 0.30
         if "explicit_remember" in names:
@@ -210,6 +228,7 @@ class HeuristicExperienceParser:
 
     def _score_confidence(self, signals: list[tuple[str, float]], entities: list[str],
                           key_facts: list[str]) -> float:
+        """置信度启发式：结构化信号越充分越可信。"""
         names = {name for name, _ in signals}
         confidence = 0.50
         if "explicit_remember" in names:

@@ -1,14 +1,13 @@
-"""CLI for the retrieval evaluation harness.
+"""检索评测 harness 的 CLI。
 
-Examples::
+示例::
 
     brain-memory-eval --scenarios benchmarks/scenarios
     brain-memory-eval --scenarios benchmarks/scenarios --sweep 60
     brain-memory-eval --scenarios benchmarks/scenarios --report report.md
 
-The harness uses your environment as-is: with a cloud embedding provider
-configured it measures real retrieval quality; without one it runs the
-deterministic hash embedder (useful for CI regression, less for tuning).
+harness 按你的环境原样运行：配置了云嵌入 provider 就度量真实检索质量；
+没有则运行确定性 hash 嵌入器（适合 CI 回归，不适合调参）。
 """
 
 from __future__ import annotations
@@ -24,6 +23,7 @@ from brain_memory.eval.sweep import export_env, sweep
 
 
 def main(argv: list[str] | None = None) -> int:
+    """CLI 入口：评测 / 扫参 / 写报告。"""
     parser = argparse.ArgumentParser(
         prog="brain-memory-eval",
         description="Evaluate memory retrieval quality over YAML scenarios.",
@@ -60,7 +60,7 @@ def main(argv: list[str] | None = None) -> int:
     print()
     print(report.to_markdown(title="Baseline (current config)"))
 
-    # cue-level misses
+    # cue 级失败明细（含语义版本断言失败）
     misses = [
         (result.name, cue)
         for result in results

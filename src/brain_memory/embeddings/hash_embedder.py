@@ -1,11 +1,9 @@
-"""Deterministic feature-hashing embedder.
+"""确定性特征哈希嵌入器。
 
-Semantic quality is intentionally *not* the goal — this provider exists so
-the whole pipeline (encoding, storage, retrieval, ranking, tests, demos)
-runs offline and reproducibly with zero dependencies and zero API keys.
-Token identity is hashed into buckets; overlapping vocabulary yields
-similarity, everything else does not.  Swap in a real embedding provider for
-production quality.
+语义质量刻意*不是*目标——这个 provider 的存在意义是让整条管线（编码、
+存储、检索、排序、测试、演示）离线、可复现、零依赖、零 API key 地运行。
+词元身份被哈希进桶；词汇重叠产生相似度，其余不产生。生产质量请换用
+真实嵌入 provider。
 """
 
 from __future__ import annotations
@@ -22,6 +20,7 @@ _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 
 
 def _tokens(text: str) -> list[str]:
+    """分词：拉丁单词 + 中文字符与二元组。"""
     lowered = text.lower()
     tokens = _TOKEN_RE.findall(lowered)
     cjk_chars = _CJK_RE.findall(lowered)
@@ -31,7 +30,7 @@ def _tokens(text: str) -> list[str]:
 
 
 class HashEmbedder:
-    """Stable feature-hashing vectors; same text always yields the same row."""
+    """稳定的特征哈希向量：相同文本永远得到相同行。"""
 
     def __init__(self, dim: int = 256) -> None:
         if dim < 16:
@@ -40,13 +39,16 @@ class HashEmbedder:
 
     @property
     def name(self) -> str:
+        """provider 名称（含维度）。"""
         return f"hash:{self._dim}"
 
     @property
     def dim(self) -> int:
+        """向量维度。"""
         return self._dim
 
     def embed_texts(self, texts: list[str]) -> np.ndarray:
+        """逐文本特征哈希：桶累加（符号由哈希决定），行归一化。"""
         rows = np.zeros((len(texts), self._dim), dtype=np.float32)
         for i, text in enumerate(texts):
             counts: dict[int, float] = {}

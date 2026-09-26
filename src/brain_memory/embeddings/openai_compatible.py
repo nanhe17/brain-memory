@@ -1,9 +1,8 @@
-"""Embeddings from any OpenAI-compatible ``POST /embeddings`` endpoint.
+"""任意 OpenAI 兼容 ``POST /embeddings`` 端点的嵌入客户端。
 
-Works with Zhipu GLM (base_url ``https://open.bigmodel.cn/api/paas/v4``,
-model ``embedding-3``) and OpenAI (``https://api.openai.com/v1``,
-``text-embedding-3-small`` etc.).  Dimension is learned from the first
-response and then asserted on every call.
+适配智谱 GLM（base_url ``https://open.bigmodel.cn/api/paas/v4``，模型
+``embedding-3``）与 OpenAI（``https://api.openai.com/v1``、
+``text-embedding-3-small`` 等）。维度从首次响应学习，之后每次调用断言。
 """
 
 from __future__ import annotations
@@ -17,7 +16,7 @@ from brain_memory.embeddings.base import EmbeddingError, normalize_rows
 
 
 class OpenAICompatibleEmbedder:
-    """Small sync client with fixed retries; batches large text lists."""
+    """小型同步客户端，固定重试次数；大批文本自动分批。"""
 
     def __init__(
         self,
@@ -41,13 +40,16 @@ class OpenAICompatibleEmbedder:
 
     @property
     def name(self) -> str:
+        """provider 名称（含模型名）。"""
         return f"openai_compatible:{self.model}"
 
     @property
     def dim(self) -> int | None:
+        """向量维度（首次响应前为 None）。"""
         return self._dim
 
     def embed_texts(self, texts: list[str]) -> np.ndarray:
+        """分批请求嵌入并拼装归一化矩阵。"""
         if not texts:
             return np.zeros((0, self._dim or 0), dtype=np.float32)
         vectors: list[list[float]] = []
@@ -55,6 +57,7 @@ class OpenAICompatibleEmbedder:
             batch = texts[start : start + self.batch_size]
             vectors.extend(self._embed_batch(batch))
         matrix = np.asarray(vectors, dtype=np.float32)
+        # 首次响应学习维度，之后每次调用断言一致
         if self._dim is None:
             self._dim = int(matrix.shape[1])
         if matrix.shape[1] != self._dim:
@@ -64,6 +67,7 @@ class OpenAICompatibleEmbedder:
         return normalize_rows(matrix)
 
     def _embed_batch(self, batch: list[str]) -> list[list[float]]:
+        """单批请求，指数退避重试；最终失败抛 EmbeddingError。"""
         last_error: Exception | None = None
         for attempt in range(self.retries + 1):
             try:

@@ -1,4 +1,4 @@
-"""Text rendering of graph subgraphs (mermaid), feeding the future Inspector."""
+"""图谱子图的文本渲染（mermaid），为将来的 Inspector 提供基础。"""
 
 from __future__ import annotations
 
@@ -6,10 +6,12 @@ from brain_memory.models import GraphSubgraph
 
 
 def _escape(text: str) -> str:
+    """mermaid 标签内的字符转义。"""
     return text.replace('"', "'").replace("\n", " ")
 
 
 def render_mermaid(subgraph: GraphSubgraph) -> str:
+    """子图 -> mermaid TD 文本（非活跃节点用斜框表示）。"""
     lines = ["graph TD"]
     ids = {node.ref: f"n{i}" for i, node in enumerate(subgraph.nodes)}
     for node in subgraph.nodes:

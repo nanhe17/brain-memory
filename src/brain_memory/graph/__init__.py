@@ -1,10 +1,9 @@
-"""Memory Graph: a unified read model over relations that already exist.
+"""记忆图谱：已存在关系的统一类型化读模型。
 
-The graph's substance is mostly *already stored* — episode_tags is an
-episode↔concept bipartite graph, evidence_ids are derived_from edges,
-memory_conflicts are pre-shaped contradicts edges.  This package adds the
-unified typed read model, a small table for explicitly asserted edges, and
-mermaid rendering; it derives everything else on demand.
+图的实体大部分*早已存储*——episode_tags 是 episode↔概念的二部图，
+evidence_ids 是 derived_from 边，memory_conflicts 是预成形的 contradicts
+边。本包做的是统一类型化读模型、一张显式断言边的小表，以及 mermaid
+渲染；其余全部按需推导。
 """
 
 from brain_memory.graph.links import LinkStore

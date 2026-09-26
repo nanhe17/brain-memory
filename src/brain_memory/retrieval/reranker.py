@@ -1,13 +1,12 @@
-"""Blind listwise LLM reranking of retrieval candidates.
+"""盲评 listwise LLM 重排检索候选。
 
-The reranker sees only the cue and the candidate contents — never the factor
-scores — so its judgment stays independent (no anchoring), and the fusion
-keeps recency/importance influence that a text-only judge cannot see:
+重排器只看 cue 和候选内容——绝不看因子分——因此它的判断保持独立
+（无锚定效应），而融合公式保住文本评审无法看到的新近度/重要性影响：
 
     final = mix * llm_relevance + (1 - mix) * factor_score
 
-Missing candidate ids score a neutral 0.5; transport or parse failures raise,
-and the engine falls back to the pure factor ranking.
+缺失的候选 id 记中性分 0.5；传输或解析失败抛错，由引擎降级回纯因子
+排序。
 """
 
 from __future__ import annotations
@@ -27,15 +26,17 @@ Return ONLY a JSON array: [{"id": <candidate number>, "relevance": <0.0-1.0>}, .
 
 
 class Reranker(Protocol):
+    """重排器协议：与输入顺序对齐的相关度分数列表。"""
+
     name: str
 
     def rerank(self, cue: str, candidates: list[RecallResult]) -> list[float]:
-        """Relevance scores aligned with the input order."""
+        """返回与输入顺序对齐的相关度分数。"""
         ...
 
 
 class LLMReranker:
-    """Single listwise call; raises on failure (engine degrades to factors)."""
+    """单次 listwise 调用；失败抛错（引擎降级到因子排序）。"""
 
     def __init__(
         self,
@@ -58,9 +59,11 @@ class LLMReranker:
 
     @property
     def name(self) -> str:
+        """重排器名称（含模型名）。"""
         return f"llm_rerank:{self.model}"
 
     def rerank(self, cue: str, candidates: list[RecallResult]) -> list[float]:
+        """一次调用评完所有候选；缺失 id 记中性 0.5。"""
         lines = [
             f"[{index}] ({result.episode.created_at:%Y-%m-%d}) "
             f"{result.episode.content[: self.content_chars]}"
@@ -93,6 +96,7 @@ class LLMReranker:
 
     @staticmethod
     def _parse_scores(raw: str, count: int) -> list[float]:
+        """解析 LLM 分数数组：钳制到 [0,1]，缺失 id 中性 0.5，垃圾项忽略。"""
         raw = raw.strip()
         if raw.startswith("```"):
             raw = raw.strip("`")

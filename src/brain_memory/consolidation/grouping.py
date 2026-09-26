@@ -1,14 +1,12 @@
-"""Candidate group selection for replay — deterministic, index-driven.
+"""重放的候选组选择——确定性、索引驱动。
 
-Groups are entity/topic tags over active episodes (the ``episode_tags`` index
-built at encode time).  This replaces the naive "cluster episode embeddings"
-from the design conversation: conversational embeddings cluster poorly, while
-tag co-occurrence is exact, explainable, and already paid for at encode time.
+组 = 活跃 episode 的实体/话题标签（编码时建好的 ``episode_tags`` 索引）。
+这替代了设计会话里朴素的"对 episode embedding 聚类"：会话嵌入的聚类
+噪声很大，而标签共现精确、可解释、且编码时已经付过成本。
 
-A group is eligible when it has at least ``min_support`` active episodes AND
-at least one episode beyond the last consolidation (incremental cursor in
-``consolidation_state``).  Same-value entity/topic groups collapse — entity
-wins — so a value is never proposed twice per run.
+一个组 eligible 需要至少 ``min_support`` 条活跃 episode，且相对上次
+巩固（``consolidation_state`` 增量游标）有至少一条新证据。同值的
+entity/topic 组折叠为一个——同一值每次运行绝不提案两次。
 """
 
 from __future__ import annotations
@@ -20,6 +18,8 @@ from brain_memory.storage.db import Database
 
 @dataclass
 class CandidateGroup:
+    """一个候选概念组。"""
+
     kind: str  # 'entity' | 'topic'
     value: str
     episode_count: int
@@ -28,6 +28,7 @@ class CandidateGroup:
 
     @property
     def key(self) -> str:
+        """组键（kind:value，日志与跳过原因用）。"""
         return f"{self.kind}:{self.value}"
 
 
@@ -39,28 +40,27 @@ def candidate_groups(
     include_below_support: bool = False,
     forced_values: tuple[str, ...] | list[str] = (),
 ) -> list[CandidateGroup]:
-    """Groups with new evidence, largest first.
+    """有新证据的组，按规模降序。
 
-    Groups are keyed by the *folded value* — entity:java and topic:java are
-    the same concept and collapse into one candidate (entity wins as the
-    representative kind, count = max across kinds).  The incremental cursor
-    is likewise per value, so a consolidated concept cannot re-enter through
-    its other tag kind.
+    组按*折叠 value* 为键——entity:java 与 topic:java 是同一个概念，
+    折叠为一个候选（entity 胜出为代表 kind，count 取各 kind 最大值）。
+    增量游标同样按 value 记，因此已巩固的概念不可能从另一个标签 kind
+    重新进入。
 
-    ``forced_values`` marks concepts with open conflicts: they are always
-    eligible (reconsolidation is due regardless of tag-count deltas) and sort
-    ahead of the rest.
+    ``forced_values`` 标记有 open 冲突的概念：无论如何都 eligible
+    （再巩固到期，与标签计数差量无关），并排在最前。
 
-    ``include_below_support`` also returns groups that exist but have fewer
-    than ``min_support`` episodes — the consolidator reports those as skipped
-    so a silent no-op run is explainable.
+    ``include_below_support`` 同时返回存在但少于 ``min_support`` 条
+    episode 的组——巩固器会把它们报告为 skipped，让空跑可解释。
     """
     forced = {v.casefold() for v in forced_values}
+    # 游标一次全部读出，按折叠 value 索引
     states = {
         row["value"]: int(row["episode_count"])
         for row in db.list_consolidation_states()
     }
 
+    # 同 value 的 entity/topic 计数折叠：kind 取 entity 优先，count 取最大
     merged: dict[str, dict] = {}
     for row in db.tag_group_counts():
         kind, value, count = row["kind"], row["value"], int(row["n"])
@@ -70,7 +70,7 @@ def candidate_groups(
             merged[folded] = {"kind": kind, "count": count}
             continue
         if entry["kind"] != "entity" and kind == "entity":
-            entry["kind"] = "entity"  # entity is the representative kind
+            entry["kind"] = "entity"  # entity 作为代表 kind
         entry["count"] = max(entry["count"], count)
 
     forced_groups: list[CandidateGroup] = []

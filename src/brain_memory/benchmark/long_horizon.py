@@ -1,16 +1,15 @@
-"""Long-horizon scale benchmark (design doc, Benchmark 5).
+"""长程规模基准（设计文档 Benchmark 5）。
 
-Generates deterministic synthetic memories at a chosen scale, then measures
-what actually matters operationally: encode throughput, recall latency
-(p50/p95), planted-fact Recall@k, store size, decay/consolidation/neighborhood
-costs.  With the hash embedder this is a latency-and-scale instrument; point
-it at a cloud embedding provider for a quality baseline too.
+按选定规模生成确定性合成记忆，然后度量真正影响运营的指标：编码吞吐、
+召回延迟（p50/p95）、埋设事实 Recall@k、库体积、巩固/衰减/邻域/PPR
+成本。用 hash 嵌入器时这是延迟与规模仪器；配置云嵌入 provider 后跑同
+一脚本亦可得到质量基线。
 
 CLI::
 
     brain-memory-benchmark --episodes 1000 --queries 50 --report out.md
 
-Deliberately not a pytest: perf numbers do not belong in CI assertions.
+刻意不做成 pytest：性能数字不属于 CI 断言。
 """
 
 from __future__ import annotations
@@ -28,6 +27,7 @@ from pathlib import Path
 from brain_memory.config import MemoryConfig
 from brain_memory.engine import MemoryEngine
 
+# 主题簇：中文与英文交替出现（评测两种语言下的管线行为）
 _TOPICS = [
     ("Java 后端", "java backend"),
     ("Minecraft 模组", "minecraft modding"),
@@ -52,13 +52,17 @@ _DETAILS = [
 
 
 def generate_episodes(n: int, seed: int = 2026) -> tuple[list[str], list[tuple[int, str]]]:
-    """Deterministic synthetic stream: topic clusters + junk + a planted
-    high-importance fact every 10 episodes (``proj-<index>`` codenames)."""
+    """确定性合成记忆流：主题簇 + 噪声 + 每 10 条埋设一个高重要性事实。
+
+    返回 (记忆文本列表, [(位置索引, 项目代号)])。埋设事实即 Recall@k
+    的期望命中项。
+    """
     rng = random.Random(seed)
     episodes: list[str] = []
     planted: list[tuple[int, str]] = []
     for i in range(n):
         if i % 10 == 0:
+            # 埋设事实："请记住"信号确保高重要性
             codename = f"proj-{i:05d}"
             episodes.append(f"请记住：用户的项目代号是 {codename}，这个项目很重要")
             planted.append((i, codename))
@@ -73,6 +77,7 @@ def generate_episodes(n: int, seed: int = 2026) -> tuple[list[str], list[tuple[i
 
 
 def _pctl(values: list[float], q: float) -> float:
+    """百分位数（简单排序取位）。"""
     if not values:
         return 0.0
     ordered = sorted(values)
@@ -82,9 +87,10 @@ def _pctl(values: list[float], q: float) -> float:
 
 def run(n_episodes: int = 1000, n_queries: int = 50, seed: int = 2026,
         db_path: str | None = None) -> dict:
-    """Run the benchmark and return a JSON-serializable report."""
+    """运行基准并返回可 JSON 序列化的报告。"""
     tmp_dir = None
     if db_path is None:
+        # 用临时文件库以便度量 db 体积
         tmp_dir = tempfile.mkdtemp(prefix="brain-memory-bench-")
         db_path = os.path.join(tmp_dir, "bench.db")
     config = MemoryConfig(db_path=db_path, embedding_dim=256)
@@ -92,6 +98,7 @@ def run(n_episodes: int = 1000, n_queries: int = 50, seed: int = 2026,
     report: dict = {"episodes": n_episodes, "queries": n_queries, "seed": seed}
 
     try:
+        # --- 编码吞吐 ---
         episodes, planted = generate_episodes(n_episodes, seed)
         started = time.perf_counter()
         for text in episodes:
@@ -101,10 +108,12 @@ def run(n_episodes: int = 1000, n_queries: int = 50, seed: int = 2026,
             report["encode_seconds"] / max(n_episodes, 1) * 1000, 3
         )
 
+        # --- 首次召回（索引构建成本）---
         first_started = time.perf_counter()
         engine.recall(episodes[0][:12], k=1)
         report["first_recall_seconds"] = round(time.perf_counter() - first_started, 4)
 
+        # --- 召回延迟与精度 ---
         rng = random.Random(seed + 1)
         sampled = rng.sample(planted, min(n_queries // 2, len(planted)))
         recall_hits = 0
@@ -114,6 +123,7 @@ def run(n_episodes: int = 1000, n_queries: int = 50, seed: int = 2026,
             started = time.perf_counter()
             hits = engine.recall(cue, k=5, use_working_memory=False)
             latencies.append(time.perf_counter() - started)
+            # 命中 = top-5 中包含埋设的项目代号
             if any(codename in h.episode.content for h in hits):
                 recall_hits += 1
         topic_queries = max(1, n_queries - len(sampled))
@@ -128,6 +138,7 @@ def run(n_episodes: int = 1000, n_queries: int = 50, seed: int = 2026,
             recall_hits / max(len(sampled), 1), 4
         )
 
+        # --- 巩固 / 衰减 / 邻域 / PPR 成本 ---
         started = time.perf_counter()
         consolidation = engine.consolidate(max_groups=20, max_episodes_per_group=30)
         report["consolidate_seconds"] = round(time.perf_counter() - started, 3)
@@ -148,6 +159,7 @@ def run(n_episodes: int = 1000, n_queries: int = 50, seed: int = 2026,
         engine.graph_rank("Java 后端 的进展", k=10)
         report["ppr_seconds"] = round(time.perf_counter() - started, 4)
 
+        # --- 库容与规模 ---
         stats = engine.stats()
         report["db_size_mb"] = round(os.path.getsize(db_path) / (1024 * 1024), 3)
         report["active_episodes"] = stats.active
@@ -163,6 +175,7 @@ def run(n_episodes: int = 1000, n_queries: int = 50, seed: int = 2026,
 
 
 def format_markdown(report: dict) -> str:
+    """报告渲染为 markdown 表格。"""
     lines = [
         "# Long-horizon benchmark",
         "",
@@ -197,6 +210,7 @@ def format_markdown(report: dict) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """CLI 入口：跑基准、打印、可选写报告。"""
     parser = argparse.ArgumentParser(
         prog="brain-memory-benchmark",
         description="Long-horizon scale benchmark (doc Benchmark 5).",

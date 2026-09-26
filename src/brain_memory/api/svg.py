@@ -1,9 +1,8 @@
-"""Server-side SVG rendering of graph subgraphs.
+"""图谱子图的服务端 SVG 渲染。
 
-Deliberately dependency-free (no mermaid.js, no CDN): the Inspector must
-work fully offline.  Layout is a simple two-column scheme — center node on
-the left, its neighbors stacked on the right, edges drawn as straight lines
-with their kind as the label.  Deterministic output for a given subgraph.
+刻意零依赖（不用 mermaid.js、不用 CDN）：Inspector 必须完全离线可用。
+布局是简单的两栏方案——中心节点在左，邻居在右列堆叠，边画成直线并以
+类型为标签。同一子图的输出确定。
 """
 
 from __future__ import annotations
@@ -18,17 +17,19 @@ _MARGIN = 16
 
 
 def _escape(text: str) -> str:
-    """XML-escape including quotes (saxutils.escape leaves them alone)."""
+    """XML 转义，含引号（saxutils.escape 默认不处理引号）。"""
     return escape(text, {'"': "&quot;"}).replace("\n", " ")
 
 
 def subgraph_to_svg(subgraph: GraphSubgraph) -> str:
+    """把子图渲染为 SVG 字符串。"""
     nodes = {n.ref: n for n in subgraph.nodes}
     neighbors = [n for n in subgraph.nodes if n.ref != subgraph.center]
     height = max(_BOX_H, len(neighbors) * (_BOX_H + _GAP_Y) + _MARGIN * 2)
     width = _NEIGHBOR_X + _BOX_W + _MARGIN * 2
 
     def box(x: float, y: float, node) -> str:
+        """单个节点框（按类型着色，非活跃节点标注状态）。"""
         color = "#dbeafe" if node.kind.value == "episode" else (
             "#dcfce7" if node.kind.value == "semantic" else "#fef9c3")
         label = _escape(node.label[:34])
@@ -41,6 +42,7 @@ def subgraph_to_svg(subgraph: GraphSubgraph) -> str:
             f'font-family="monospace">{label}{_escape(status)}</text>'
         )
 
+    # 中心节点垂直居中，邻居列依次排布
     center_y = max(_MARGIN, (height - _BOX_H) / 2)
     parts = [
         f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
@@ -54,6 +56,7 @@ def subgraph_to_svg(subgraph: GraphSubgraph) -> str:
         neighbor_y[node.ref] = y
         parts.append(box(_NEIGHBOR_X, y, node))
 
+    # 边：从源框右缘画到目标框左缘，中点标注边类型
     positions = {subgraph.center: (_CENTER_X, center_y)}
     positions.update({ref: (_NEIGHBOR_X, y) for ref, y in neighbor_y.items()})
     for edge in subgraph.edges:

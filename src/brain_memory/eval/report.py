@@ -1,4 +1,4 @@
-"""Aggregated evaluation reports with tag breakdown and markdown output."""
+"""聚合评测报告：标签分组与 markdown 输出。"""
 
 from __future__ import annotations
 
@@ -9,6 +9,8 @@ from brain_memory.eval.scenario import ScenarioResult
 
 
 class ScenarioReport(BaseModel):
+    """单场景的报告行。"""
+
     name: str
     tags: list[str]
     cues: int
@@ -18,6 +20,8 @@ class ScenarioReport(BaseModel):
 
 
 class TagReport(BaseModel):
+    """同标签场景的聚合报告。"""
+
     tag: str
     scenarios: int
     recall: float
@@ -26,7 +30,7 @@ class TagReport(BaseModel):
 
 
 class EvalReport(BaseModel):
-    """Aggregated results of one configuration over all scenarios."""
+    """一个配置在全部场景上的聚合结果。"""
 
     weights: RetrievalWeights
     k: int
@@ -34,6 +38,7 @@ class EvalReport(BaseModel):
 
     @classmethod
     def build(cls, weights: RetrievalWeights, k: int, results: list[ScenarioResult]) -> "EvalReport":
+        """从场景结果构建报告。"""
         return cls(
             weights=weights,
             k=k,
@@ -52,21 +57,25 @@ class EvalReport(BaseModel):
 
     @property
     def recall(self) -> float:
+        """全部场景 recall 均值。"""
         if not self.scenarios:
             return 0.0
         return sum(s.recall for s in self.scenarios) / len(self.scenarios)
 
     @property
     def mrr(self) -> float:
+        """全部场景 MRR 均值。"""
         if not self.scenarios:
             return 0.0
         return sum(s.mrr for s in self.scenarios) / len(self.scenarios)
 
     @property
     def violations(self) -> int:
+        """全部禁用泄漏之和。"""
         return sum(s.violations for s in self.scenarios)
 
     def by_tag(self) -> list[TagReport]:
+        """按标签聚合（无标签的场景归入 untagged）。"""
         buckets: dict[str, list[ScenarioReport]] = {}
         for scenario in self.scenarios:
             for tag in scenario.tags or ["untagged"]:
@@ -85,6 +94,7 @@ class EvalReport(BaseModel):
         return reports
 
     def to_markdown(self, title: str = "Evaluation report") -> str:
+        """渲染为 markdown 报告。"""
         lines = [
             f"# {title}",
             "",

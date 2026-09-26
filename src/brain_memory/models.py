@@ -1,10 +1,8 @@
-"""Core data models for the memory engine.
+"""记忆引擎的核心数据模型。
 
-These models form the public contract of the system.  The most important one
-is :class:`ExtractedExperience`: every episode enters the store through it, so
-its fields (entities / topics / key_facts / emphasis signals) are what all
-downstream machinery — retrieval factors, future consolidation, pattern
-separation — consumes.  Keep it stable.
+这些模型构成系统的公开契约。其中最重要的是 :class:`ExtractedExperience`：
+每条记忆都经由它进入存储，其字段（实体/话题/关键事实/强调信号）是下游
+全部机制——检索因子、巩固分组、模式分离——的消费对象，务必保持稳定。
 """
 
 from __future__ import annotations
@@ -18,15 +16,15 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 def utcnow() -> datetime:
+    """当前 UTC 时间（时区感知）。"""
     return datetime.now(timezone.utc)
 
 
 class MemoryStatus(str, Enum):
-    """Lifecycle state of a memory.
+    """记忆的生命周期状态。
 
-    Phase 1 only uses ACTIVE and ARCHIVED (soft delete).  FORGOTTEN is the
-    terminal state planned for the decay/forgetting phase — the value exists
-    now so transitions are explicit from the start.
+    Phase 1 只使用 ACTIVE 和 ARCHIVED（软删除）；FORGOTTEN 是衰减/遗忘
+    阶段规划的终态——枚举值从第一天就定义好，让状态迁移始终显式。
     """
 
     ACTIVE = "active"
@@ -35,11 +33,11 @@ class MemoryStatus(str, Enum):
 
 
 class SemanticKind(str, Enum):
-    """What kind of knowledge a semantic memory states.
+    """语义记忆陈述的知识类型。
 
-    CO_OCCURRENCE is the deterministic path's honest output ("X shows up in N
-    memories"); FACT / PREFERENCE / SCHEMA / GENERALIZATION are only produced
-    by the LLM consolidator, which can actually judge meaning.
+    CO_OCCURRENCE（共现）是确定性路径唯一会诚实输出的类型（"X 在 N 条
+    记忆中反复出现"）；FACT / PREFERENCE / SCHEMA / GENERALIZATION 只有
+    LLM 巩固器才有资格判定，启发式不假装理解语义。
     """
 
     FACT = "fact"
@@ -50,10 +48,10 @@ class SemanticKind(str, Enum):
 
 
 class ConflictKind(str, Enum):
-    """How new evidence relates to an existing semantic memory (doc §16).
+    """新证据与既有信念的关系分类（设计文档 §16）。
 
-    Conflicts are signals of memory evolution, not errors.  UNRESOLVED marks
-    an encode-time challenge that reconsolidation has not classified yet.
+    冲突是记忆演化的重要信号，而非错误。UNRESOLVED 表示编码时发现的
+    挑战，尚待再巩固裁决。
     """
 
     CONTRADICTION = "contradiction"
@@ -64,16 +62,18 @@ class ConflictKind(str, Enum):
 
 
 class ConflictStatus(str, Enum):
+    """冲突记录的处理状态：open（待裁决）→ resolved / dismissed。"""
+
     OPEN = "open"
     RESOLVED = "resolved"
     DISMISSED = "dismissed"
 
 
 class MemoryConflict(BaseModel):
-    """A recorded clash between new evidence and an existing belief.
+    """新证据与既有信念之间的一次冲突记录。
 
-    Designed to become Memory-Graph edges (Phase 6): both endpoints (semantic
-    memory + triggering episode) and the direction are already here.
+    按 Phase 6 图谱的边的形状设计：两端（语义记忆 + 触发 episode）与
+    方向都已就位，将来直接升格为 `contradicts`/`updates` 边。
     """
 
     id: int
@@ -83,7 +83,7 @@ class MemoryConflict(BaseModel):
     old_version: int
     statement_before: str | None = None
     trigger_episode_id: int | None = None
-    trigger_kind: str = "consolidation"  # encode | consolidation | manual
+    trigger_kind: str = "consolidation"  # encode | consolidation | manual（触发来源）
     detected_at: datetime
     resolution_version: int | None = None
     resolved_at: datetime | None = None
@@ -91,7 +91,7 @@ class MemoryConflict(BaseModel):
 
 
 class ExtractedExperience(BaseModel):
-    """Structured output of an ExperienceParser — the system's data contract."""
+    """ExperienceParser 的结构化输出——整个系统的数据契约。"""
 
     content: str
     entities: list[str] = Field(default_factory=list)
@@ -106,7 +106,7 @@ class ExtractedExperience(BaseModel):
 
 
 class Episode(BaseModel):
-    """An immutable episodic memory (append-only; never merged or overwritten)."""
+    """不可变的情景记忆（append-only：永不合并、永不被覆写）。"""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
@@ -126,16 +126,17 @@ class Episode(BaseModel):
     last_accessed: datetime | None = None
     status: MemoryStatus = MemoryStatus.ACTIVE
     metadata: dict[str, Any] = Field(default_factory=dict)
-    # Not persisted in the default dump; loaded on demand by the store.
+    # 默认不序列化；由存储层按需加载
     embedding: np.ndarray | None = Field(default=None, repr=False, exclude=True)
 
     @property
     def is_active(self) -> bool:
+        """是否处于活跃状态（归档/遗忘的记忆不参与检索）。"""
         return self.status is MemoryStatus.ACTIVE
 
 
 class FactorScores(BaseModel):
-    """Per-factor retrieval scores, each normalized to [0, 1]."""
+    """多因子检索的逐因子得分，每个因子已归一化到 [0, 1]。"""
 
     semantic: float = 0.0
     keyword: float = 0.0
@@ -146,16 +147,16 @@ class FactorScores(BaseModel):
     context: float = 0.0
 
     def as_dict(self) -> dict[str, float]:
+        """导出为普通字典（供 API 序列化）。"""
         return self.model_dump()
 
 
 class SemanticMemory(BaseModel):
-    """Consolidated knowledge distilled from multiple episodes.
+    """由多条情景记忆巩固而来的知识。
 
-    Identity is structural: one row per ``concept`` (the normalized group key),
-    never duplicated by textual similarity.  Every state change appends a
-    :class:`MemoryVersion` row, so "why do you believe this" is always
-    answerable from evidence + history.
+    身份是结构化的：每个 ``concept``（归一化的组键）只有一行，绝不因
+    文本相似而重复。每次状态变更都会追加一行 :class:`MemoryVersion`，
+    因此"你为什么相信这个"永远可以从证据 + 历史中找到答案。
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
@@ -177,7 +178,7 @@ class SemanticMemory(BaseModel):
 
 
 class MemoryVersion(BaseModel):
-    """One historical state of a semantic memory (full version trail)."""
+    """语义记忆的一个历史状态（完整版本链）。"""
 
     id: int
     semantic_id: int
@@ -190,11 +191,10 @@ class MemoryVersion(BaseModel):
 
 
 class PatternProposal(BaseModel):
-    """A consolidator's candidate knowledge statement for one concept group.
+    """巩固器对某个概念组给出的候选知识陈述。
 
-    ``change_kind`` is the reconsolidation verdict against the existing
-    statement ("consistent" = plain refinement); ``metadata`` carries
-    deterministic signals such as preference-polarity counts.
+    ``change_kind`` 是针对既有陈述的再巩固裁决（"consistent" = 普通精炼）；
+    ``metadata`` 携带确定性信号，如偏好极性统计。
     """
 
     concept: str
@@ -209,35 +209,43 @@ class PatternProposal(BaseModel):
 
 
 class NodeKind(str, Enum):
+    """图节点类型：两个实例节点 + 一个概念伪节点。"""
+
     EPISODE = "episode"
     SEMANTIC = "semantic"
-    CONCEPT = "concept"  # entity/topic pseudo-node — the graph's connective tissue
+    CONCEPT = "concept"  # 实体/话题伪节点——图的连接组织
 
 
 class EdgeKind(str, Enum):
-    MENTIONS = "mentions"                    # episode -> concept (tags)
-    DERIVED_FROM = "derived_from"            # semantic -> episode (evidence)
-    CONTRADICTS = "contradicts"              # semantic -> episode (conflict record)
-    CO_OCCURS_WITH = "co_occurs_with"        # concept <-> concept (shared episodes)
-    SIMILAR_TO = "similar_to"                # episode <-> episode (vector kNN)
-    RELATED_TO = "related_to"                # explicit (memory_links)
-    CAUSED_BY = "caused_by"                  # explicit (memory_links)
-    PART_OF = "part_of"                      # explicit (memory_links)
+    """图边类型（每类的来源见表内注释）。"""
+
+    MENTIONS = "mentions"                    # episode -> 概念（tags）
+    DERIVED_FROM = "derived_from"            # semantic -> episode（证据）
+    CONTRADICTS = "contradicts"              # semantic -> episode（冲突记录）
+    CO_OCCURS_WITH = "co_occurs_with"        # 概念 <-> 概念（共享 episode）
+    SIMILAR_TO = "similar_to"                # episode <-> episode（向量 kNN）
+    RELATED_TO = "related_to"                # 显式（memory_links）
+    CAUSED_BY = "caused_by"                  # 显式（memory_links）
+    PART_OF = "part_of"                      # 显式（memory_links）
 
 
 EXPLICIT_RELATIONS = ("related_to", "caused_by", "similar_to", "part_of")
 
 
 class GraphNode(BaseModel):
-    ref: str  # "e12" | "s3" | "c:java"
+    """图节点：ref 是统一引用（"e12" / "s3" / "c:java"）。"""
+
+    ref: str
     kind: NodeKind
-    id: int | None = None  # None for concept nodes
+    id: int | None = None  # 概念节点没有实例 id
     label: str
     status: MemoryStatus | None = None
-    detail: str = ""  # statement / truncated content
+    detail: str = ""  # 陈述或截断的内容
 
 
 class GraphEdge(BaseModel):
+    """带来源的类型化图边（provenance 标注这条边从哪张表推导而来）。"""
+
     source: str
     target: str
     kind: EdgeKind
@@ -246,22 +254,26 @@ class GraphEdge(BaseModel):
 
 
 class GraphSubgraph(BaseModel):
+    """一次邻域查询的结果：中心 + 节点集 + 边集。"""
+
     center: str
     nodes: list[GraphNode] = Field(default_factory=list)
     edges: list[GraphEdge] = Field(default_factory=list)
 
 
 class MemoryLink(BaseModel):
-    """An explicitly asserted relationship (agent or user) between two
-    instance nodes.  Derived relations (mentions/evidence/conflicts) are NOT
-    stored here — they are read models over their own tables."""
+    """显式断言的关系（agent 或用户），连接两个实例节点。
+
+    可推导的关系（mentions/证据/冲突）不存这里——它们是各自表上的
+    读模型。
+    """
 
     id: int
     source_kind: NodeKind
     source_id: int
     target_kind: NodeKind
     target_id: int
-    relation: str  # closed vocabulary: related_to | caused_by | similar_to | part_of
+    relation: str  # 封闭词表：related_to | caused_by | similar_to | part_of
     weight: float = 1.0
     created_by: str = "agent"
     created_at: datetime
@@ -269,14 +281,13 @@ class MemoryLink(BaseModel):
 
 
 class RecallResult(BaseModel):
-    """A retrieved memory plus an explanation of why it was recalled.
+    """一条被召回的记忆，以及"为什么召回它"的解释。
 
-    ``kind="semantic"`` hits carry the :class:`SemanticMemory` in ``semantic``
-    and a read-only *view* of it in ``episode`` (content=statement,
-    created_at=updated_at, importance=confidence, entities=[concept]) so that
-    consumers (reranker, prompt block, API) can treat every hit uniformly.
-    The view's id lives in the semantic id space — never feed it back into
-    episode APIs.
+    ``kind="semantic"`` 的命中在 ``semantic`` 中携带真正的
+    :class:`SemanticMemory`，同时在 ``episode`` 中携带一个只读*视图*
+    （content=statement、created_at=updated_at、importance=confidence、
+    entities=[concept]），让所有消费方（重排器/prompt 块/API）统一处理。
+    视图的 id 属于语义 id 空间——绝不要把它回传给 episode 接口。
     """
 
     episode: Episode
@@ -285,34 +296,38 @@ class RecallResult(BaseModel):
     score: float
     factors: FactorScores
     reasons: list[str] = Field(default_factory=list)
-    # Set when the blind LLM reranker contributed to the final score.
+    # 盲评 LLM 重排器对最终得分有贡献时设置
     llm_relevance: float | None = None
-    # Set when this hit entered via graph expansion rather than direct matching.
+    # 经图扩展进入结果（而非直接匹配）时设置
     expanded: bool = False
 
     @property
     def content(self) -> str:
+        """命中的文本内容（情景=原文，语义=陈述）。"""
         return self.episode.content
 
     @property
     def memory_id(self) -> int:
+        """记忆 id（语义命中时是语义 id）。"""
         return self.episode.id
 
     @property
     def is_semantic(self) -> bool:
+        """是否为语义（巩固知识）命中。"""
         return self.kind == "semantic"
 
 
 class EncodeResult(BaseModel):
+    """编码结果：新episode 或命中的重复项。"""
+
     episode: Episode
     duplicate: bool = False
-    # Set when this episode's correction signals challenge an existing
-    # semantic memory (reconsolidation entry, doc §15).
+    # 本条 episode 的纠正信号挑战了某个既有语义记忆时设置（再巩固入口，文档 §15）
     challenge: "MemoryConflict | None" = None
 
 
 class WorkingMemoryState(BaseModel):
-    """Snapshot of the agent's working memory (current-task state, not a store)."""
+    """工作记忆快照（当前任务状态，不是一个存储）。"""
 
     current_goal: str | None = None
     active_entities: list[str] = Field(default_factory=list)
@@ -323,6 +338,8 @@ class WorkingMemoryState(BaseModel):
 
 
 class EngineStats(BaseModel):
+    """引擎整体统计。"""
+
     total_episodes: int
     active: int
     archived: int
@@ -336,24 +353,24 @@ class EngineStats(BaseModel):
 
 
 class ConsolidationReport(BaseModel):
-    """Outcome of one ``consolidate()`` run."""
+    """一次 ``consolidate()`` 的结果。"""
 
     groups_considered: int = 0
     created: list[SemanticMemory] = Field(default_factory=list)
     updated: list[SemanticMemory] = Field(default_factory=list)
-    skipped: list[str] = Field(default_factory=list)  # "group_key: reason"
+    skipped: list[str] = Field(default_factory=list)  # "group_key: 原因"
     conflicts: list[MemoryConflict] = Field(default_factory=list)
 
     @property
     def touched(self) -> list[SemanticMemory]:
+        """本次新建 + 更新的语义记忆。"""
         return [*self.created, *self.updated]
 
 
 class DecayReport(BaseModel):
-    """Outcome of one ``decay()`` sweep.
+    """一次 ``decay()`` 扫描的结果。
 
-    All transitions are soft: archived memories can be restored, forgotten
-    ones too — nothing is ever physically deleted in this phase.
+    所有迁移都是软的：归档可恢复，遗忘亦可恢复——本阶段绝不物理删除。
     """
 
     swept_episodes: int = 0
@@ -367,6 +384,7 @@ class DecayReport(BaseModel):
 
     @property
     def transitions(self) -> int:
+        """本次发生的状态迁移总数。"""
         return (
             len(self.archived_episode_ids)
             + len(self.forgotten_episode_ids)

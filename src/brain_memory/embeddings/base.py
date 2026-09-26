@@ -1,4 +1,4 @@
-"""Embedding provider contract."""
+"""嵌入 provider 契约。"""
 
 from __future__ import annotations
 
@@ -8,11 +8,11 @@ import numpy as np
 
 
 class EmbeddingError(RuntimeError):
-    """Raised when an embedding backend fails irrecoverably."""
+    """嵌入后端不可恢复的失败。"""
 
 
 def normalize_rows(vectors: np.ndarray) -> np.ndarray:
-    """L2-normalize each row; zero rows stay zero (they match nothing)."""
+    """逐行 L2 归一化；零向量保持为零（与任何向量都不相似）。"""
     vectors = np.asarray(vectors, dtype=np.float32)
     if vectors.ndim == 1:
         vectors = vectors.reshape(1, -1)
@@ -23,16 +23,15 @@ def normalize_rows(vectors: np.ndarray) -> np.ndarray:
 
 @runtime_checkable
 class EmbeddingProvider(Protocol):
-    """Text -> fixed-dimension L2-normalized float32 vectors.
+    """文本 -> 固定维度的 L2 归一化 float32 向量。
 
-    ``dim`` may be ``None`` for providers that only learn the dimension from
-    their first response (cloud APIs).  The engine asserts consistency across
-    every batch.
+    ``dim`` 对云 provider 可以为 ``None``——维度只能从首次响应学习；
+    引擎会对每个批次断言维度一致。
     """
 
     name: str
     dim: int | None
 
     def embed_texts(self, texts: list[str]) -> np.ndarray:
-        """Return a ``(len(texts), dim)`` float32 matrix, rows L2-normalized."""
+        """返回 ``(len(texts), dim)`` 的 float32 矩阵，行已 L2 归一化。"""
         ...

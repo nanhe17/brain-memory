@@ -1,14 +1,11 @@
-"""Forgetting: memory strength, decay sweeps, and soft lifecycle transitions.
+"""遗忘：记忆强度、衰减扫描与软生命周期迁移。
 
-The doc's lifecycle (§14) ends here: strong memories persist, weak ones
-drift to archive, and archived memories that stay untouched eventually fall
-into the FORGOTTEN terminal state — which is still soft (restore() works;
-nothing is physically deleted).
+文档的生命周期（§14）在这里收束：强记忆存续，弱记忆漂向归档，归档后
+长期无人问津的最终落入 FORGOTTEN 终态——那仍是软状态（restore() 有效；
+本阶段绝不物理删除）。
 
-Strength is computed on the fly from stored fields (no write amplification,
-always consistent with the formula), reusing the retrieval layer's
-normalization helpers so "what makes a memory strong" means the same thing
-in ranking and in decay.
+强度从已存字段即时计算（无写放大，公式调整永远自洽），复用检索层的
+归一化辅助函数，使"什么让记忆强"在排序与衰减中含义一致。
 """
 
 from brain_memory.forgetting.decay import (

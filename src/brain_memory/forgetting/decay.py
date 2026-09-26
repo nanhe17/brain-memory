@@ -1,22 +1,18 @@
-"""Memory strength and the decay sweep.
+"""记忆强度与衰减扫描。
 
-Two mechanisms, each with one job:
+两个机制，各司一职：
 
-* **active -> archived** is strength-driven: a memory whose computed strength
-  falls below ``decay_archive_threshold`` is no longer worth keeping in the
-  live set.  Importance and confidence form a *static floor*, so explicitly
-  important memories never decay into the archive — exactly the doc's
-  "strong memories persist".
-* **archived -> forgotten** is dwell-driven: an archived memory cannot be
-  recalled, its last_touched anchor freezes, and after
-  ``decay_forget_after_days`` it falls into the terminal (still soft)
-  FORGOTTEN state.  A second strength threshold would not work here: the
-  static floor would keep most memories above any lower threshold forever.
+* **active -> archived** 由强度驱动：记忆的计算强度跌破
+  ``decay_archive_threshold`` 就不再值得留在活跃集。重要性与置信度
+  构成*静态下限*，因此被显式标记重要的记忆永远不会衰减进归档——
+  恰好是文档的"强记忆存续"。
+* **archived -> forgotten** 由驻留时间驱动：归档的记忆无法被召回，
+  last_touched 锚点冻结，超过 ``decay_forget_after_days`` 天后落入
+  终态（仍是软的）。第二个强度阈值在这里行不通：静态下限会让大多数
+  记忆永远高居任何更低阈值之上。
 
-Evidence protection closes the loop with consolidation (Phase 3): episodes
-cited by an *active* semantic memory are exempt from the sweep — knowledge
-that is alive keeps its evidence alive, and only when the knowledge itself
-decays is the evidence released to age naturally.
+证据保护与巩固（Phase 3）闭环：被*活跃*语义记忆引用的 episode 豁免
+扫描——活着的关键住它的证据；知识本身衰减后，证据才被释放去自然老化。
 """
 
 from __future__ import annotations
@@ -25,11 +21,11 @@ from datetime import datetime, timezone
 
 from brain_memory.config import MemoryConfig
 from brain_memory.episodic.store import EpisodicStore
-from brain_memory.models import DecayReport, Episode, SemanticMemory
+from brain_memory.models import DecayReport, SemanticMemory
 from brain_memory.retrieval import ranking as _rh
 from brain_memory.storage.db import Database
 
-# Calibration units, deliberately not user configuration (see DESIGN.md).
+# 强度权重是校准单元，刻意不做用户配置（见 DESIGN.md）。
 EPISODE_STRENGTH_WEIGHTS = {
     "importance": 0.30,
     "recency": 0.40,
@@ -46,15 +42,16 @@ _EVIDENCE_FULL_SUPPORT = 5
 
 
 def last_touched(created_at: datetime, last_accessed: datetime | None) -> datetime:
-    """The recency anchor: a memory is as fresh as its last use."""
+    """新近度锚点：一条记忆的"新鲜度"以其最近一次使用为准。"""
     if last_accessed is not None and last_accessed > created_at:
         return last_accessed
     return created_at
 
 
 def episode_strength(
-    episode: Episode, *, now: datetime, half_life_days: float
+    episode, *, now: datetime, half_life_days: float
 ) -> float:
+    """情景记忆强度：重要性/新近度/频率/置信度的加权混合。"""
     recency = _rh.recency_factor(
         last_touched(episode.created_at, episode.last_accessed), now, half_life_days
     )
@@ -72,6 +69,7 @@ def episode_strength(
 def semantic_strength(
     memory: SemanticMemory, *, now: datetime, half_life_days: float
 ) -> float:
+    """语义记忆强度：证据越多越持久（互补学习系统风格）。"""
     recency = _rh.recency_factor(
         last_touched(memory.updated_at, memory.last_accessed), now, half_life_days
     )
@@ -88,12 +86,15 @@ def semantic_strength(
 
 
 def _aware(dt: datetime) -> datetime:
+    """补齐 naive datetime 的 UTC 时区。"""
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt
 
 
 class DecaySweeper:
+    """遗忘扫描器：强度归档 + 驻留遗忘 + 证据保护。"""
+
     def __init__(
         self,
         db: Database,
@@ -107,17 +108,22 @@ class DecaySweeper:
         self._config = config
 
     def sweep(self, *, dry_run: bool = False, now: datetime | None = None) -> DecayReport:
+        """全量扫描：计算强度、应用顺序迁移、返回报告。
+
+        ``dry_run=True`` 只算不改；``now`` 允许时间推演。
+        """
         now = _aware(now) if now is not None else datetime.now(timezone.utc)
         half_life = self._config.recency_half_life_days
         archive_threshold = self._config.decay_archive_threshold
         forget_after_days = self._config.decay_forget_after_days
         report = DecayReport(dry_run=dry_run)
 
-        # evidence of living knowledge is exempt
+        # 活跃知识的证据豁免扫描
         protected: set[int] = set()
         for memory in self._semantic.list_active():
             protected.update(memory.evidence_ids)
 
+        # 第一段：active -> archived（强度阈值）
         for episode in self._episodic.all_active():
             report.swept_episodes += 1
             if episode.id in protected:
@@ -127,7 +133,7 @@ class DecaySweeper:
             if strength < archive_threshold:
                 report.archived_episode_ids.append(episode.id)
 
-        # archived -> forgotten by dwell time (last_touched freezes in archive)
+        # 第二段：archived -> forgotten（驻留时长；归档期间 last_touched 冻结）
         for row in self._db.list_archived_episodes():
             touched = last_touched(
                 self._db.parse_dt(row["created_at"]),
@@ -153,6 +159,7 @@ class DecaySweeper:
         if dry_run:
             return report
 
+        # 应用迁移（dry_run 时跳过）
         for episode_id in report.archived_episode_ids:
             self._episodic.archive(episode_id)
         for episode_id in report.forgotten_episode_ids:

@@ -1,12 +1,11 @@
-"""MemoryEngine — the facade that expresses memory *behaviors*.
+"""MemoryEngine——用"记忆行为"表达操作的门面。
 
-Public surface (design doc §4): encode / recall / inspect / forget / restore
-/ stats, plus a session-scoped working memory.  The recall pipeline is:
-parse cue -> working-memory boost -> optional LLM query expansion (cue
-variants retrieved in union) -> normalized factor ranking -> optional blind
-LLM rerank fused into the score.  Every LLM stage is gated by config and
-degrades to the deterministic path on failure; everything lifecycle-related
-(timestamps, hashing, storage, stats) is pure code here.
+公开接口（设计文档 §4）：encode / recall / inspect / forget / restore /
+stats，外加会话级工作记忆。recall 管线为：解析 cue → 工作记忆增强 →
+可选 LLM 查询扩展（cue 变体并集检索）→ 归一化多因子排序 → 可选盲评
+LLM 重排 → 可选 PPR 混合 → 图扩展。所有 LLM 阶段都受配置门控并在失败
+时降级到确定性路径；生命周期相关的一切（时间戳、哈希、存储、统计）
+都是纯代码。
 """
 
 from __future__ import annotations
@@ -51,10 +50,9 @@ from brain_memory.models import (
     RecallResult,
     SemanticMemory,
 )
-from brain_memory.retrieval.retriever import passes_filters, semantic_view
 from brain_memory.query.expander import LLMQueryExpander
 from brain_memory.retrieval.reranker import LLMReranker
-from brain_memory.retrieval.retriever import Retriever
+from brain_memory.retrieval.retriever import Retriever, passes_filters, semantic_view
 from brain_memory.retrieval.vector_index import VectorIndex
 from brain_memory.storage.db import Database
 from brain_memory.working.working_memory import WorkingMemory
@@ -63,18 +61,17 @@ logger = logging.getLogger(__name__)
 
 
 def _embedding_text(content: str, entities: list[str], topics: list[str]) -> str:
-    """What gets embedded: the content plus its structured tags.
+    """构造嵌入输入：正文 + 结构化标签。
 
-    Tag augmentation noticeably improves recall for short cues (a cue like
-    "minecraft mod" matches an episode that mentions Minecraft only in its
-    entity list).
+    拼接标签能明显改善短 cue 的召回（"minecraft 模组" 这样的 cue 能命中
+    只在实体列表里提到 Minecraft 的 episode）。
     """
     tags = " ".join(dict.fromkeys(entities + topics))
     return f"{content}\n{tags}" if tags else content
 
 
 class MemoryEngine:
-    """Owns storage, parsing, embedding, retrieval, and working memory."""
+    """持有存储、解析、嵌入、检索、巩固与工作记忆的总门面。"""
 
     def __init__(self, config: MemoryConfig | None = None) -> None:
         self.config = config or MemoryConfig.from_env()
@@ -118,9 +115,10 @@ class MemoryEngine:
         )
         self.working = WorkingMemory()
 
-    # -- construction ---------------------------------------------------------
+    # -- 组件构建 ---------------------------------------------------------
 
     def _build_embedder(self) -> EmbeddingProvider:
+        """按配置选择嵌入实现（云 API 或离线 hash）。"""
         if self.config.embedding_provider == "openai_compatible":
             return OpenAICompatibleEmbedder(
                 base_url=self.config.api_base,
@@ -130,6 +128,7 @@ class MemoryEngine:
         return HashEmbedder(dim=self.config.embedding_dim)
 
     def _build_parser(self) -> ExperienceParser:
+        """构建经验解析器：LLM 解析器（可配）+ 启发式兜底。"""
         heuristic = HeuristicExperienceParser()
         if self.config.llm_model and self.config.llm_api_key:
             return LLMExperienceParser(
@@ -141,9 +140,11 @@ class MemoryEngine:
         return heuristic
 
     def _llm_ready(self) -> bool:
+        """LLM 端点是否已配置（模型名 + key 均非空）。"""
         return bool(self.config.llm_model and self.config.llm_api_key)
 
     def _build_expander(self) -> LLMQueryExpander | None:
+        """查询扩展器：auto 且配置了 LLM 才构建。"""
         if self.config.query_expansion == "auto" and self._llm_ready():
             return LLMQueryExpander(
                 base_url=self.config.llm_base_url,
@@ -153,6 +154,7 @@ class MemoryEngine:
         return None
 
     def _build_reranker(self) -> LLMReranker | None:
+        """盲评重排器：auto 且配置了 LLM 才构建。"""
         if self.config.rerank == "auto" and self._llm_ready():
             return LLMReranker(
                 base_url=self.config.llm_base_url,
@@ -163,6 +165,7 @@ class MemoryEngine:
         return None
 
     def _build_llm_consolidator(self) -> LLMConsolidator | None:
+        """LLM 巩固器：配置了 LLM 才构建。"""
         if self._llm_ready():
             return LLMConsolidator(
                 base_url=self.config.llm_base_url,
@@ -173,9 +176,10 @@ class MemoryEngine:
 
     @property
     def embedder(self) -> EmbeddingProvider:
+        """当前嵌入实现（demo/API 展示用）。"""
         return self._embedder
 
-    # -- core behaviors ---------------------------------------------------------
+    # -- 核心行为 ---------------------------------------------------------
 
     def encode(
         self,
@@ -186,24 +190,27 @@ class MemoryEngine:
         created_at: datetime | None = None,
         metadata: dict | None = None,
     ) -> EncodeResult:
-        """Parse, embed, and store an experience (append-only; see store)."""
+        """解析、嵌入并存储一段经验（append-only，见 store）。"""
         extracted = self._parser.parse(text, source=source, context=context, timestamp=created_at)
         vector = self._embed(extracted)
         episode, duplicate = self._store.add(extracted, vector, metadata=metadata)
         if not duplicate:
             self._index.invalidate()
+        # 重复编码不再触发挑战（同一事件重复目击不构成新证据）
         challenge = None if duplicate else self._detect_challenge(episode)
         self.working.note_episode(episode.id)
         self.working.add_entities(episode.entities)
         return EncodeResult(episode=episode, duplicate=duplicate, challenge=challenge)
 
     def _detect_challenge(self, episode: Episode) -> MemoryConflict | None:
-        """Reconsolidation entry (doc §15): a correction against a known
-        belief opens a conflict and forces reconsolidation — it never edits
-        the statement or the confidence itself; the evidence is weighed at
-        reconsolidation time, not at detection time."""
+        """再巩固入口（文档 §15）：纠正信号挑战已知信念。
+
+        打开一条冲突记录并强制该概念再巩固——检测本身不修改陈述、不降
+        置信度，证据的权衡发生在再巩固时而非检测时。
+        """
         if "correction" not in episode.emphasis_signals:
             return None
+        # 候选目标 = 概念命中的语义记忆
         concepts = {e.casefold() for e in episode.entities} | {
             t.casefold() for t in episode.topics
         }
@@ -213,9 +220,8 @@ class MemoryEngine:
             if memory is not None and memory.status is MemoryStatus.ACTIVE:
                 targets.append(memory)
         if not targets:
-            # indirect correction ("其实我改主意了"): only trust it when the
-            # working memory holds exactly one semantic hit — never guess
-            # among several.
+            # 间接纠正（"其实我改主意了"）：仅当工作记忆恰好持有一个
+            # 语义命中时才采信——多个命中绝不瞎猜。
             recalled = [
                 r.semantic for r in self.working.last_recall
                 if r.is_semantic and r.semantic
@@ -251,10 +257,10 @@ class MemoryEngine:
         touch: bool = True,
         use_working_memory: bool = True,
     ) -> list[RecallResult]:
-        """Retrieve memories for a (possibly partial) cue, with explanations.
+        """为一个（可能不完整的）线索检索记忆，附解释。
 
-        ``touch=True`` reactivation-bookkeeps the hits: access counts rise,
-        which feeds the frequency factor on future recalls (doc §15).
+        ``touch=True`` 对命中做再激活簿记：访问计数上升，喂给未来召回的
+        频率因子（文档 §15）。
         """
         final_k = k or self.config.default_top_k
         parsed_cue = self._parser.parse(cue)
@@ -287,6 +293,7 @@ class MemoryEngine:
             )
         results = results[:final_k]
         if touch and results:
+            # 再激活簿记按命中类型分流到两张表
             episodic_ids = [r.episode.id for r in results if not r.is_semantic]
             semantic_ids = [r.semantic.id for r in results if r.is_semantic and r.semantic]
             if episodic_ids:
@@ -296,13 +303,14 @@ class MemoryEngine:
         self.working.remember_recall(results)
         return results
 
-    # -- recall pipeline stages -------------------------------------------------
+    # -- recall 管线各阶段 -------------------------------------------------
 
     def _working_memory_entities(self) -> list[str] | None:
-        """Session entities that bias the entity-overlap factor toward
-        memories related to the current task.  Factor-only by design: they
-        must never widen the query channels (a stale session entity in the
-        FTS terms would resurrect unrelated memories)."""
+        """会话实体：偏置实体重叠因子，向当前任务相关的记忆倾斜。
+
+        刻意只进因子、不进查询通道——陈旧的会话实体若混入 FTS 词，
+        会让不相关的记忆靠新近度复活。
+        """
         entities = self.working.state.active_entities[:5]
         return entities or None
 
@@ -312,14 +320,14 @@ class MemoryEngine:
         time_from: datetime | None,
         time_to: datetime | None,
     ) -> tuple[list[ExtractedExperience], datetime | None, datetime | None]:
-        """Original cue plus optional LLM expansion variants (advisory only:
-        the original is always kept as its own retrieval channel)."""
+        """原始 cue + 可选的 LLM 扩展变体（仅建议性质：原始 cue 永远
+        保留为独立检索通道，改写跑偏只会增加候选，不会丢候选）。"""
         variants = [parsed_cue]
         expanded_from = expanded_to = None
         if self._expander is not None:
             try:
                 expansion = self._expander.expand(parsed_cue.content, self.working.snapshot())
-            except Exception as exc:  # noqa: BLE001 — expansion is advisory
+            except Exception as exc:  # noqa: BLE001 — 扩展仅是建议
                 logger.warning("query expansion failed (%s); using original cue", exc)
                 expansion = None
             if expansion is not None:
@@ -336,15 +344,18 @@ class MemoryEngine:
         return variants, expanded_from, expanded_to
 
     def _embed_variants(self, variants: list[ExtractedExperience]) -> list[np.ndarray]:
+        """批量嵌入全部 cue 变体（一次 API 调用）。"""
         texts = [_embedding_text(v.content, v.entities, v.topics) for v in variants]
         return list(self._embedder.embed_texts(texts))
 
     def _fuse_rerank(self, cue: str, results: list[RecallResult]) -> list[RecallResult]:
-        """Blind LLM relevance fused into the factor score (reranker sees
-        content only).  Any failure keeps the pure factor ranking."""
+        """盲评 LLM 相关度融合进因子分（重排器只看内容）。
+
+        任何失败都保持纯因子排序。
+        """
         try:
             scores = self._reranker.rerank(cue, results)
-        except Exception as exc:  # noqa: BLE001 — reranking is advisory
+        except Exception as exc:  # noqa: BLE001 — 重排仅是建议
             logger.warning("rerank failed (%s); keeping factor ranking", exc)
             return results
         mix = self.config.rerank_mix
@@ -368,6 +379,7 @@ class MemoryEngine:
 
     @staticmethod
     def _parse_iso(value: str | None) -> datetime | None:
+        """解析 LLM 给出的 ISO 时间；naive 补 UTC，非法返回 None。"""
         if not value:
             return None
         try:
@@ -378,9 +390,10 @@ class MemoryEngine:
             parsed = parsed.replace(tzinfo=timezone.utc)
         return parsed
 
-    # -- graph-aware recall (pattern completion, doc §10) --------------------------
+    # -- 图感知召回（模式补全，文档 §10）--------------------------------------
 
     def _ppr_seeds(self, parsed_cue: ExtractedExperience) -> dict[str, float]:
+        """从 cue 的实体/话题折叠出 PPR 种子概念（封顶 5 个）。"""
         concepts = list(dict.fromkeys(
             e.casefold() for e in [*parsed_cue.entities, *parsed_cue.topics]
         ))
@@ -389,10 +402,11 @@ class MemoryEngine:
     def _blend_ppr(
         self, parsed_cue: ExtractedExperience, results: list[RecallResult]
     ) -> list[RecallResult]:
-        """PersonalizedPageRank blended into the factor score (research
-        extension, default off).  Seeds are the cue's concepts; the PPR mass
-        rewards memories that are structurally central to what the cue is
-        about, regardless of lexical overlap."""
+        """PersonalizedPageRank 混合进因子分（研究扩展，默认关）。
+
+        种子是 cue 的概念；PPR 质量奖励与 cue 主题结构上居中的记忆，
+        与词面重叠无关。
+        """
         seeds = self._ppr_seeds(parsed_cue)
         if not seeds:
             return results
@@ -408,6 +422,7 @@ class MemoryEngine:
             return results
         mix = self.config.ppr_mix
 
+        # 既有候选：因子分与 PPR 质量加权混合
         blended: list[RecallResult] = []
         for result in results:
             kind = "s" if result.is_semantic else "e"
@@ -419,8 +434,8 @@ class MemoryEngine:
                             f"graph-ppr: mass {ppr:.4f} × w{mix:.2f} → {mix * ppr:.2f}"],
             }))
 
-        # structurally-central episodes the channels missed, appended with
-        # PPR mass alone (capped, so they cannot flood the list)
+        # 通道漏掉的结构性中心 episode：仅凭 PPR 质量追加（有封顶，
+        # 不能淹没结果列表）
         seen = {("s" if r.is_semantic else "e", r.episode.id) for r in blended}
         added = 0
         for ref, ppr in sorted(mass.items(), key=lambda kv: -kv[1]):
@@ -445,8 +460,10 @@ class MemoryEngine:
         return blended
 
     def graph_rank(self, cue: str, *, k: int = 10) -> list[tuple[str, float]]:
-        """Standalone PPR ranking for a cue (research API): node refs with
-        their mass, best first.  No blending, no factor scores."""
+        """独立 PPR 排序（研究 API）：按质量降序返回节点引用与质量。
+
+        不做混合、不带因子分。
+        """
         parsed_cue = self._parser.parse(cue)
         seeds = self._ppr_seeds(parsed_cue)
         if not seeds:
@@ -470,13 +487,12 @@ class MemoryEngine:
         time_to: datetime | None,
         require_entities: list[str] | None,
     ) -> list[RecallResult]:
-        """One-hop graph expansion behind a penalty.
+        """罚分保护下的一跳图扩展。
 
-        Expanded entries score `anchor * expansion_penalty`, so the original
-        top hit can never be displaced; they carry their provenance in
-        reasons and the `expanded` flag.  Expansion obeys the same recall
-        filters as direct matches — it may add context, never leak what the
-        caller filtered out.
+        扩展项得分 = 锚点 × expansion_penalty，因此原始 top-1 永远不
+        会被挤掉；它们在 reasons 中携带来源并在 `expanded` 上打标。
+        扩展遵守与直召回相同的过滤器——只增加上下文，绝不泄漏被
+        调用方过滤掉的内容。
         """
         budget = self.config.expansion_limit
         if budget <= 0:
@@ -492,6 +508,7 @@ class MemoryEngine:
             if budget <= 0:
                 break
             if anchor.is_semantic:
+                # 语义命中：拉取其证据 episode
                 memory = anchor.semantic
                 for episode in self._store.get_many(memory.evidence_ids):
                     if budget <= 0 or not episode.is_active or not passes(episode):
@@ -509,13 +526,13 @@ class MemoryEngine:
                     ))
                 continue
 
+            # 情景命中：共享概念的兄弟 episode + 概念的巩固知识
             concepts = list(dict.fromkeys(
                 e.casefold() for e in [*anchor.episode.entities, *anchor.episode.topics]
             ))[:3]
             for concept in concepts:
                 if budget <= 0:
                     break
-                # sibling episodes sharing the concept
                 ids = set(self._store.ids_for_entities([concept]))
                 ids |= set(self._store.ids_for_topics([concept]))
                 siblings = [
@@ -532,7 +549,6 @@ class MemoryEngine:
                         reasons=[f"graph: shares entity '{concept}' with #{anchor.episode.id}"],
                         expanded=True,
                     ))
-                # the concept's consolidated knowledge, if not already recalled
                 memory = self._semantic_store.get_by_concept(concept)
                 if (
                     memory is not None
@@ -555,11 +571,11 @@ class MemoryEngine:
         merged.sort(key=lambda r: -r.score)
         return merged
 
-    # -- graph API -------------------------------------------------------------------
+    # -- 图 API -------------------------------------------------------------------
 
     def neighborhood(self, ref: str, *, include_similar: bool = False,
                      max_per_kind: int = 6) -> GraphSubgraph:
-        """Typed one-hop neighborhood of 'e<id>' / 's<id>' / 'c:<concept>'."""
+        """'e<id>' / 's<id>' / 'c:<concept>' 的类型化一跳邻域。"""
         return self._graph.neighborhood(
             ref, include_similar=include_similar, max_per_kind=max_per_kind
         )
@@ -567,7 +583,7 @@ class MemoryEngine:
     def link(self, source_ref: str, relation: str, target_ref: str, *,
              weight: float = 1.0, created_by: str = "agent",
              metadata: dict | None = None) -> MemoryLink:
-        """Assert an explicit relationship between two instance nodes."""
+        """在两个实例节点之间断言一条显式关系。"""
         if relation not in EXPLICIT_RELATIONS:
             raise ValueError(
                 f"relation must be one of {EXPLICIT_RELATIONS}, got {relation!r}"
@@ -576,6 +592,7 @@ class MemoryEngine:
         target_kind, target_id, target_concept = parse_ref(target_ref)
         if source_kind is NodeKind.CONCEPT or target_kind is NodeKind.CONCEPT:
             raise ValueError("explicit links connect instances, not concepts")
+        # 两个端点都必须存在且活跃
         for kind, node_id in ((source_kind, source_id), (target_kind, target_id)):
             node = (
                 self._store.get(node_id)
@@ -600,16 +617,17 @@ class MemoryEngine:
         )
 
     def unlink(self, link_id: int) -> bool:
+        """删除一条显式关系边。"""
         return self._link_store.delete(link_id)
 
     def related_concepts(self, concept: str, *, limit: int = 5) -> list[tuple[str, int]]:
-        """Concepts co-occurring with *concept* across active episodes."""
+        """活跃 episode 上与 *concept* 共现的概念。"""
         return self._graph.related_concepts(concept, limit=limit)
 
-    # -- introspection (Inspector) --------------------------------------------------
+    # -- 内省（Inspector）--------------------------------------------------
 
     def strengths(self, *, limit: int = 10) -> list[dict]:
-        """Weakest active memories by computed strength (episodes + semantics)."""
+        """按计算强度升序的最弱活跃记忆（情景 + 语义）。"""
         from brain_memory.forgetting.decay import episode_strength, semantic_strength
 
         now = datetime.now(timezone.utc)
@@ -631,7 +649,7 @@ class MemoryEngine:
         return rows[:limit]
 
     def timeline(self, *, days: int = 30) -> dict:
-        """Per-day counts of encodes, new knowledge, and conflicts."""
+        """按天统计编码数、新增知识与冲突数。"""
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
         by_day: dict[str, dict] = {}
 
@@ -649,7 +667,7 @@ class MemoryEngine:
 
     def list_episodes(self, *, status: str | None = "active", limit: int = 50,
                       offset: int = 0) -> list[Episode]:
-        """Episode list for inspection (any status; newest first)."""
+        """供检视的记忆列表（任意状态，最新在前）。"""
         if status == "active":
             rows = self._db.list_active_episodes()
         elif status == "archived":
@@ -658,13 +676,30 @@ class MemoryEngine:
             rows = self._db.list_all_episodes()
         return [self._store.row_to_episode(row) for row in rows][offset : offset + limit]
 
+    # -- 生命周期行为 ---------------------------------------------------------------
+
+    def forget(self, memory_id: int) -> bool:
+        """软删除：先归档，物理删除是后续阶段才决策的事。"""
+        archived = self._store.archive(memory_id)
+        if archived:
+            self._index.invalidate()
+        return archived
+
+    def restore(self, memory_id: int) -> bool:
+        """从归档/遗忘状态恢复为活跃。"""
+        restored = self._store.restore(memory_id)
+        if restored:
+            self._index.invalidate()
+        return restored
+
     def inspect(self, memory_id: int) -> dict | None:
-        """Full memory details plus the most related active memories."""
+        """单条记忆详情 + 最相关的活跃记忆。"""
         episode = self._store.get(memory_id, with_embedding=True)
         if episode is None:
             return None
         related: list[Episode] = []
         if episode.embedding is not None:
+            # 用自身向量找近邻，排除自己，最多取 3 条
             for related_id, _similarity in self._index.search(episode.embedding, 4):
                 if related_id != episode.id:
                     related_episode = self._store.get(related_id)
@@ -678,9 +713,8 @@ class MemoryEngine:
         }
 
     def inspect_semantic(self, semantic_id: int) -> dict | None:
-        """Answer "why do you believe this": the statement, its evidence
-        episodes, the full version trail, and every recorded conflict
-        (doc §39, principle 6)."""
+        """回答"你为什么相信这个"：陈述 + 证据 episode + 完整版本链 +
+        全部冲突记录（文档 §39 原则 6）。"""
         memory = self._semantic_store.get(semantic_id)
         if memory is None:
             return None
@@ -691,14 +725,42 @@ class MemoryEngine:
             "conflicts": self._conflict_store.for_semantic(semantic_id),
         }
 
+    def find_semantic(self, concept: str) -> SemanticMemory | None:
+        """按结构键 concept 查找语义记忆。"""
+        return self._semantic_store.get_by_concept(concept)
+
+    def list_semantics(self) -> list[SemanticMemory]:
+        """全部活跃语义记忆（最新更新在前）。"""
+        return self._semantic_store.list_active()
+
+    def consolidate(
+        self,
+        *,
+        max_groups: int = 5,
+        max_episodes_per_group: int = 20,
+        min_support: int | None = None,
+    ) -> ConsolidationReport:
+        """重放 + 模式提取 → 语义记忆（文档 §11/§23）。
+
+        基于实体/话题索引的确定性分组，组级游标增量推进，配置了 LLM 用
+        LLM 提案否则用确定性统计提案。显式调用——调度交给 agent 循环或
+        cron，不在引擎内起后台线程。
+        """
+        report = self._consolidator.consolidate(
+            max_groups=max_groups,
+            max_episodes_per_group=max_episodes_per_group,
+            min_support=min_support,
+        )
+        if report.touched:
+            self._semantic_index.invalidate()
+        return report
+
     def conflicts(self, status: str | None = None) -> list[MemoryConflict]:
-        """All recorded conflicts, optionally filtered by status
-        (open/resolved/dismissed)."""
+        """全部冲突记录，可按状态过滤（open/resolved/dismissed）。"""
         return self._conflict_store.list(status=status)
 
     def reconsolidate(self, semantic_id: int, *, max_episodes_per_group: int = 20) -> ConsolidationReport:
-        """Manually force reconsolidation of one semantic memory
-        (doc §4: memory.reconsolidate(memory_id, evidence))."""
+        """手动强制某个语义记忆再巩固（文档 §4: memory.reconsolidate）。"""
         memory = self._semantic_store.get(semantic_id)
         if memory is None:
             raise ValueError(f"semantic memory {semantic_id} not found")
@@ -711,10 +773,11 @@ class MemoryEngine:
         return report
 
     def decay(self, *, dry_run: bool = False, now: datetime | None = None) -> DecayReport:
-        """Forgetting sweep (doc §14/§30): strength-driven archiving plus
-        dwell-driven forgetting.  Explicit call — schedule it from the agent
-        loop or cron; ``dry_run=True`` previews without touching anything,
-        ``now`` enables time-travel for tests and projections."""
+        """遗忘扫描（文档 §14/§30）：强度驱动的归档 + 驻留驱动的遗忘。
+
+        显式调用——调度交给 agent 循环或 cron；``dry_run=True`` 预览而不
+        改动任何状态；``now`` 支持时间推演（测试/投影用）。
+        """
         report = self._decay_sweeper.sweep(dry_run=dry_run, now=now)
         if not dry_run and report.transitions:
             if report.archived_episode_ids or report.forgotten_episode_ids:
@@ -723,51 +786,10 @@ class MemoryEngine:
                 self._semantic_index.invalidate()
         return report
 
-    def find_semantic(self, concept: str) -> SemanticMemory | None:
-        """Look up a semantic memory by its structural concept key."""
-        return self._semantic_store.get_by_concept(concept)
-
-    def list_semantics(self) -> list[SemanticMemory]:
-        """All active semantic memories (newest update first)."""
-        return self._semantic_store.list_active()
-
-    def consolidate(
-        self,
-        *,
-        max_groups: int = 5,
-        max_episodes_per_group: int = 20,
-        min_support: int | None = None,
-    ) -> ConsolidationReport:
-        """Replay + pattern extraction -> semantic memories (doc §11/§23).
-
-        Deterministic grouping over the entity/topic index, incremental via
-        per-group cursors, LLM proposal when configured with the deterministic
-        statistical proposal as fallback.  Explicit call — schedule it from
-        the agent loop or cron, not from inside the engine.
-        """
-        report = self._consolidator.consolidate(
-            max_groups=max_groups,
-            max_episodes_per_group=max_episodes_per_group,
-            min_support=min_support,
-        )
-        if report.touched:
-            self._semantic_index.invalidate()
-        return report
-
-    def forget(self, memory_id: int) -> bool:
-        """Soft delete: archive now, physical removal is a later-phase decision."""
-        archived = self._store.archive(memory_id)
-        if archived:
-            self._index.invalidate()
-        return archived
-
-    def restore(self, memory_id: int) -> bool:
-        restored = self._store.restore(memory_id)
-        if restored:
-            self._index.invalidate()
-        return restored
+    # -- 统计与辅助 ------------------------------------------------------------------
 
     def stats(self) -> EngineStats:
+        """引擎整体统计。"""
         counts = self._db.count_by_status()
         extremes = self._db.episode_extremes()
         return EngineStats(
@@ -783,9 +805,8 @@ class MemoryEngine:
             open_conflicts=self._db.count_open_conflicts(),
         )
 
-    # -- helpers ------------------------------------------------------------------
-
     def _distinct_entity_count(self) -> int:
+        """活跃 episode 中去重后的实体数。"""
         rows = self._db.list_active_episodes()
         seen: set[str] = set()
         for row in rows:
@@ -794,15 +815,18 @@ class MemoryEngine:
         return len(seen)
 
     def _embed(self, extracted: ExtractedExperience) -> np.ndarray:
+        """嵌入一条结构化经验（正文 + 标签拼接）。"""
         text = _embedding_text(extracted.content, extracted.entities, extracted.topics)
         return self._embedder.embed_texts([text])[0]
 
     def _embed_text(self, text: str) -> np.ndarray:
+        """嵌入单条文本（巩固器写语义向量用）。"""
         return self._embedder.embed_texts([text])[0]
 
-    # -- lifecycle ------------------------------------------------------------------
+    # -- 生命周期 ------------------------------------------------------------------
 
     def close(self) -> None:
+        """关闭底层存储连接。"""
         self._db.close()
 
     def __enter__(self) -> "MemoryEngine":

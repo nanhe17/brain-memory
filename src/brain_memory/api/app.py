@@ -1,16 +1,12 @@
-"""Optional FastAPI wrapper around a MemoryEngine + read-only Inspector.
+"""可选的 FastAPI 封装：MemoryEngine + 只读 Inspector。
 
-Install with ``pip install -e '.[server]'`` and run (factory mode, so no
-engine is built at import time)::
+安装 ``pip install -e '.[server]'`` 后运行（factory 模式，导入时不构建
+引擎）::
 
     uvicorn brain_memory.api.app:create_app --factory
 
-The HTTP layer adds nothing to memory semantics — every route is a thin
-adapter over the engine.  ``GET /`` serves the single-page Inspector
-(vanilla JS + server-side SVG, fully offline).
-
-The HTTP layer adds nothing to memory semantics — every route is a thin
-adapter over the engine, which remains the real API.
+HTTP 层不添加任何记忆语义——每条路由都是引擎的薄适配器。``GET /``
+提供单页 Inspector（vanilla JS + 服务端 SVG，完全离线）。
 """
 
 from __future__ import annotations
@@ -24,16 +20,21 @@ from brain_memory.models import Episode
 
 
 def _episode_dump(episode: Episode) -> dict:
+    """episode 序列化（嵌入向量已在模型层排除）。"""
     return episode.model_dump(mode="json")
 
 
 class EncodeRequest(BaseModel):
+    """POST /encode 请求体。"""
+
     text: str = Field(min_length=1)
     source: str = "conversation"
     context: str | None = None
 
 
 class RecallRequest(BaseModel):
+    """POST /recall 请求体。"""
+
     cue: str = Field(min_length=1)
     k: int | None = Field(default=None, ge=1, le=50)
     source: str | None = None
@@ -41,6 +42,7 @@ class RecallRequest(BaseModel):
 
 
 def create_app(engine: MemoryEngine | None = None) -> "FastAPI":  # noqa: F821
+    """构建 FastAPI 应用（全部路由为引擎的薄适配器）。"""
     try:
         from fastapi import FastAPI, HTTPException
     except ImportError as exc:  # pragma: no cover
@@ -51,13 +53,17 @@ def create_app(engine: MemoryEngine | None = None) -> "FastAPI":  # noqa: F821
     engine = engine or MemoryEngine()
     app = FastAPI(title="Brain Memory Engine", version="0.1.0")
 
+    # ---- 记忆行为 ----
+
     @app.post("/encode")
     def encode(request: EncodeRequest) -> dict:
+        """编码一段经验（含挑战检测）。"""
         result = engine.encode(request.text, source=request.source, context=request.context)
         return {"episode": _episode_dump(result.episode), "duplicate": result.duplicate}
 
     @app.post("/recall")
     def recall(request: RecallRequest) -> list[dict]:
+        """召回记忆（含因子分解与解释）。"""
         results = engine.recall(
             request.cue,
             k=request.k,
@@ -76,28 +82,32 @@ def create_app(engine: MemoryEngine | None = None) -> "FastAPI":  # noqa: F821
 
     @app.get("/memories/{memory_id}")
     def inspect(memory_id: int) -> dict:
+        """单条情景记忆详情 + 相关记忆。"""
         inspection = engine.inspect(memory_id)
         if inspection is None:
             raise HTTPException(status_code=404, detail="memory not found")
         return {
             "episode": _episode_dump(inspection["episode"]),
-            "related": [_episode_dump(episode) for episode in inspection["related"]],
+            "related": [_episode_dump(e) for e in inspection["related"]],
         }
 
     @app.post("/memories/{memory_id}/forget")
     def forget(memory_id: int) -> dict:
+        """软删除（归档）一条记忆。"""
         if not engine.forget(memory_id):
             raise HTTPException(status_code=404, detail="memory not found")
         return {"id": memory_id, "status": "archived"}
 
     @app.get("/stats")
     def stats() -> dict:
+        """引擎统计。"""
         return engine.stats().model_dump(mode="json")
 
-    # ---- Inspector (read-only) ----
+    # ---- Inspector（只读）----
 
     @app.get("/")
     def inspector():
+        """提供单页 Inspector 静态文件。"""
         from fastapi.responses import FileResponse
 
         html_path = Path(__file__).parent / "static" / "inspector.html"
@@ -105,6 +115,7 @@ def create_app(engine: MemoryEngine | None = None) -> "FastAPI":  # noqa: F821
 
     @app.get("/api/overview")
     def overview() -> dict:
+        """统计 + 配置摘要。"""
         return {
             "stats": engine.stats().model_dump(mode="json"),
             "embedding_provider": engine.embedder.name,
@@ -119,10 +130,12 @@ def create_app(engine: MemoryEngine | None = None) -> "FastAPI":  # noqa: F821
 
     @app.get("/api/timeline")
     def timeline(days: int = 30) -> dict:
+        """按天时间线（编码/知识/冲突计数）。"""
         return engine.timeline(days=max(1, min(days, 365)))
 
     @app.get("/api/memories")
     def memories(status: str = "active", limit: int = 50, offset: int = 0) -> dict:
+        """双库记忆列表（带分页与状态过滤）。"""
         all_episodes = engine.list_episodes(status=None)
         window = engine.list_episodes(status=status, limit=limit, offset=offset)
         return {
@@ -148,6 +161,7 @@ def create_app(engine: MemoryEngine | None = None) -> "FastAPI":  # noqa: F821
 
     @app.get("/api/memories/episode/{memory_id}")
     def episode_detail(memory_id: int) -> dict:
+        """情景记忆详情（含相关记忆）。"""
         inspection = engine.inspect(memory_id)
         if inspection is None:
             raise HTTPException(status_code=404, detail="memory not found")
@@ -158,6 +172,7 @@ def create_app(engine: MemoryEngine | None = None) -> "FastAPI":  # noqa: F821
 
     @app.get("/api/memories/semantic/{memory_id}")
     def semantic_detail(memory_id: int) -> dict:
+        """语义记忆详情（陈述 + 证据 + 版本链 + 冲突）。"""
         inspection = engine.inspect_semantic(memory_id)
         if inspection is None:
             raise HTTPException(status_code=404, detail="semantic memory not found")
@@ -170,6 +185,7 @@ def create_app(engine: MemoryEngine | None = None) -> "FastAPI":  # noqa: F821
 
     @app.get("/api/graph/{ref}.json")
     def graph_json(ref: str) -> dict:
+        """邻域子图的 JSON 形式。"""
         try:
             sub = engine.neighborhood(ref)
         except ValueError as exc:
@@ -178,6 +194,7 @@ def create_app(engine: MemoryEngine | None = None) -> "FastAPI":  # noqa: F821
 
     @app.get("/api/graph/{ref}.svg")
     def graph_svg(ref: str):
+        """邻域子图的服务端 SVG 渲染。"""
         from fastapi.responses import Response
 
         from brain_memory.api.svg import subgraph_to_svg
@@ -190,14 +207,17 @@ def create_app(engine: MemoryEngine | None = None) -> "FastAPI":  # noqa: F821
 
     @app.get("/api/strengths")
     def strengths(limit: int = 10) -> list[dict]:
+        """最弱记忆排行（遗忘视角）。"""
         return engine.strengths(limit=max(1, min(limit, 100)))
 
     @app.get("/api/conflicts")
     def conflicts(status: str | None = None) -> list[dict]:
+        """冲突记录列表。"""
         return [c.model_dump(mode="json") for c in engine.conflicts(status=status)]
 
     @app.get("/api/decay/preview")
     def decay_preview() -> dict:
+        """衰减 dry-run 预览。"""
         return engine.decay(dry_run=True).model_dump(mode="json")
 
     return app

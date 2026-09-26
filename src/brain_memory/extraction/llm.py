@@ -1,9 +1,8 @@
-"""Optional LLM-backed experience parser (OpenAI-compatible /chat/completions).
+"""可选的 LLM 经验解析器（OpenAI 兼容 /chat/completions）。
 
-Used only when explicitly configured (``MEMORY_LLM_MODEL`` + key).  Every
-failure mode — network errors, malformed JSON, schema violations — degrades
-to the heuristic parser, because encoding must never lose an experience
-(design doc, Principle 5: LLM assists, deterministic code owns the pipeline).
+仅在显式配置时使用（``MEMORY_LLM_MODEL`` + key）。所有失败形态——网络
+错误、畸形 JSON、schema 违规——都降级到启发式解析器，因为编码绝不能
+丢失经验（设计文档原则 5：LLM 辅助，确定性代码掌控管线）。
 """
 
 from __future__ import annotations
@@ -34,7 +33,7 @@ Rules: never invent facts; importance higher for explicit requests to remember, 
 
 
 class LLMExperienceParser:
-    """Heuristic parser + LLM refinement, with graceful degradation."""
+    """启发式解析器 + LLM 精炼，带优雅降级。"""
 
     def __init__(
         self,
@@ -61,9 +60,10 @@ class LLMExperienceParser:
         context: str | None = None,
         timestamp: datetime | None = None,
     ) -> ExtractedExperience:
+        """入口：任何 LLM 失败都回退到启发式解析器。"""
         try:
             extracted = self._parse_with_llm(text)
-        except Exception as exc:  # noqa: BLE001 — degrade, never lose the experience
+        except Exception as exc:  # noqa: BLE001 — 降级，绝不丢失经验
             logger.warning("LLM parse failed (%s); falling back to heuristic parser", exc)
             return self.fallback.parse(text, source=source, context=context, timestamp=timestamp)
         extracted.source = source
@@ -72,6 +72,7 @@ class LLMExperienceParser:
         return extracted
 
     def _parse_with_llm(self, text: str) -> ExtractedExperience:
+        """单次 chat 调用 + 严格 JSON 校验。"""
         payload = {
             "model": self.model,
             "messages": [
@@ -93,6 +94,7 @@ class LLMExperienceParser:
 
     @staticmethod
     def _extract_json(raw: str) -> dict[str, Any]:
+        """从回复中稳健地抠出 JSON 对象（剥代码围栏、取最外层大括号）。"""
         raw = raw.strip()
         if raw.startswith("```"):
             raw = raw.strip("`")
@@ -108,6 +110,7 @@ class LLMExperienceParser:
 
     @staticmethod
     def _validate(data: dict[str, Any], original: str) -> ExtractedExperience:
+        """按契约校验并钳制字段；空内容视为失败。"""
         content = str(data.get("content") or "").strip() or original.strip()
         if not content:
             raise ValueError("LLM returned empty content")

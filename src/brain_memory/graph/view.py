@@ -1,17 +1,16 @@
-"""The typed graph read model.
+"""类型化图谱读模型。
 
-`neighborhood()` merges four edge sources into one subgraph:
+``neighborhood()`` 把四个边来源合并为一个子图：
 
-* ``mentions``      episode -> concept            (episode_tags, provenance tags)
-* ``derived_from``  semantic -> episode           (evidence_ids, provenance evidence)
-* ``contradicts``   semantic -> episode           (memory_conflicts, provenance conflict)
-* ``co_occurs_with`` concept <-> concept          (tags self-join, provenance co_occurrence)
-* ``similar_to``    episode <-> episode           (vector kNN on demand, provenance vector)
-* explicit relations from ``memory_links``        (provenance explicit)
+* ``mentions``       episode -> 概念          （episode_tags，provenance tags）
+* ``derived_from``   semantic -> episode      （evidence_ids，provenance evidence）
+* ``contradicts``    semantic -> episode      （memory_conflicts，provenance conflict）
+* ``co_occurs_with`` 概念 <-> 概念            （tags 自连接，provenance co_occurrence）
+* ``similar_to``     episode <-> episode      （按需向量 kNN，provenance vector）
+* ``memory_links`` 中的显式关系             （provenance explicit）
 
-Lifecycle: edges whose endpoints have left the active state are filtered at
-read time — no cascade deletes, so `restore()` brings relationships back by
-itself.  Concept nodes are always considered alive.
+生命周期：端点离开 active 状态的边在读取时过滤——不做级联删除，
+``restore()`` 会自动带回关系。概念节点永远视为存活。
 """
 
 from __future__ import annotations
@@ -35,8 +34,8 @@ _MAX_LABEL = 60
 
 
 def parse_ref(ref: str) -> tuple[NodeKind, int | None, str | None]:
-    """'e12' -> (episode, 12, None); 's3' -> (semantic, 3, None);
-    'c:java' -> (concept, None, 'java')."""
+    """解析统一引用：'e12' -> (episode, 12, None)；'s3' -> (semantic, 3, None)；
+    'c:java' -> (concept, None, 'java')。"""
     ref = (ref or "").strip()
     if ref.startswith("c:"):
         value = ref[2:].strip().casefold()
@@ -57,18 +56,23 @@ def parse_ref(ref: str) -> tuple[NodeKind, int | None, str | None]:
 
 
 def episode_ref(episode_id: int) -> str:
+    """episode 引用字符串。"""
     return f"e{episode_id}"
 
 
 def semantic_ref(semantic_id: int) -> str:
+    """语义记忆引用字符串。"""
     return f"s{semantic_id}"
 
 
 def concept_ref(value: str) -> str:
+    """概念引用字符串。"""
     return f"c:{value.casefold()}"
 
 
 class GraphView:
+    """图谱读模型：合并多来源边，产出类型化子图。"""
+
     def __init__(
         self,
         db: Database,
@@ -85,7 +89,7 @@ class GraphView:
         self._links = link_store
         self._index = episodic_index
 
-    # -- public ----------------------------------------------------------------
+    # -- 公开 ----------------------------------------------------------------
 
     def neighborhood(
         self,
@@ -94,6 +98,7 @@ class GraphView:
         include_similar: bool = False,
         max_per_kind: int = 6,
     ) -> GraphSubgraph:
+        """一跳邻域：按中心节点类型分派到对应的边收集逻辑。"""
         kind, node_id, concept = parse_ref(ref)
         sub = GraphSubgraph(center=ref)
         nodes: dict[str, GraphNode] = {}
@@ -111,12 +116,14 @@ class GraphView:
             if episode is None:
                 raise ValueError(f"episode {node_id} not found")
             add_node(self._episode_node(episode))
+            # mentions 边：episode -> 其全部概念
             for value in self._episode_concepts(episode)[:max_per_kind]:
                 concept_node = self._concept_node(value)
                 add_node(concept_node)
                 add_edge(GraphEdge(source=episode_ref(node_id), target=concept_node.ref,
                                    kind=EdgeKind.MENTIONS, provenance="tags"))
             self._add_explicit(add_node, add_edge, NodeKind.EPISODE, node_id)
+            # similar_to 按需启用（需要向量）
             if include_similar and self._index is not None and episode.embedding is not None:
                 self._add_similar(add_node, add_edge, episode, max_per_kind)
 
@@ -125,11 +132,13 @@ class GraphView:
             if memory is None:
                 raise ValueError(f"semantic memory {node_id} not found")
             add_node(self._semantic_node(memory))
+            # derived_from 边：语义 -> 证据 episode
             for episode in self._active_episodes(memory.evidence_ids)[:max_per_kind]:
                 add_node(self._episode_node(episode))
                 add_edge(GraphEdge(source=semantic_ref(node_id),
                                    target=episode_ref(episode.id),
                                    kind=EdgeKind.DERIVED_FROM, provenance="evidence"))
+            # contradicts 边：冲突记录的触发 episode
             for conflict in self._conflicts.for_semantic(node_id):
                 if conflict.trigger_episode_id is None:
                     continue
@@ -144,6 +153,7 @@ class GraphView:
             self._add_explicit(add_node, add_edge, NodeKind.SEMANTIC, node_id)
 
         else:
+            # 概念中心：提及它的 episode、共现概念、该概念的巩固知识
             concept_node = self._concept_node(concept)
             add_node(concept_node)
             ids = self._concept_episode_ids(concept)
@@ -171,14 +181,16 @@ class GraphView:
         return sub
 
     def related_concepts(self, concept: str, *, limit: int = 5) -> list[tuple[str, int]]:
+        """与 *concept* 共现的概念及其共享 episode 数。"""
         return [
             (row["other"], int(row["n"]))
             for row in self._db.concept_co_occurrence(concept.casefold(), limit)
         ]
 
-    # -- helpers -----------------------------------------------------------------
+    # -- 辅助 -----------------------------------------------------------------
 
     def _add_explicit(self, add_node, add_edge, kind: NodeKind, node_id: int) -> None:
+        """收集显式边：端点不存在或非 active 的边被过滤。"""
         for link in self._links.for_node(kind, node_id):
             source_ref = self._instance_ref(link.source_kind, link.source_id)
             target_ref = self._instance_ref(link.target_kind, link.target_id)
@@ -210,7 +222,7 @@ class GraphView:
                 other = self._semantic_node(target_semantic)
             else:
                 continue
-            # lifecycle: an endpoint that left the active state hides the edge
+            # 生命周期：任一端点离开 active 状态即隐藏这条边
             if (source_episode and not source_episode.is_active) or (
                 source_semantic and source_semantic.status is not MemoryStatus.ACTIVE
             ):
@@ -226,6 +238,7 @@ class GraphView:
                                provenance="explicit"))
 
     def _add_similar(self, add_node, add_edge, episode, max_per_kind: int) -> None:
+        """向量近邻的 similar_to 边（排除自身与非活跃）。"""
         for similar_id, similarity in self._index.search(episode.embedding, max_per_kind + 1):
             if similar_id == episode.id:
                 continue
@@ -240,9 +253,11 @@ class GraphView:
 
     @staticmethod
     def _instance_ref(kind: NodeKind, node_id: int) -> str:
+        """实例节点的引用字符串。"""
         return episode_ref(node_id) if kind is NodeKind.EPISODE else semantic_ref(node_id)
 
     def _episode_node(self, episode) -> GraphNode:
+        """episode 的图节点。"""
         return GraphNode(
             ref=episode_ref(episode.id),
             kind=NodeKind.EPISODE,
@@ -253,6 +268,7 @@ class GraphView:
         )
 
     def _semantic_node(self, memory) -> GraphNode:
+        """语义记忆的图节点。"""
         return GraphNode(
             ref=semantic_ref(memory.id),
             kind=NodeKind.SEMANTIC,
@@ -264,20 +280,24 @@ class GraphView:
 
     @staticmethod
     def _concept_node(value: str) -> GraphNode:
+        """概念的图节点（伪节点，无实例 id）。"""
         return GraphNode(ref=concept_ref(value), kind=NodeKind.CONCEPT, label=value)
 
     @staticmethod
     def _episode_concepts(episode) -> list[str]:
+        """episode 的全部概念（实体 + 话题，折叠去重）。"""
         seen: dict[str, None] = {}
         for tag in [*episode.entities, *episode.topics]:
             seen.setdefault(tag.casefold())
         return list(seen)
 
     def _concept_episode_ids(self, concept: str) -> list[int]:
+        """提及该概念的 episode id（entity 与 topic 两种 kind 并集）。"""
         ids = set(self._db.episode_ids_by_tag("entity", concept))
         ids.update(self._db.episode_ids_by_tag("topic", concept))
         return sorted(ids)
 
     def _active_episodes(self, episode_ids: list[int]):
+        """取 episode 列表并过滤出活跃项。"""
         episodes = self._episodic.get_many(episode_ids)
         return [e for e in episodes if e.is_active]

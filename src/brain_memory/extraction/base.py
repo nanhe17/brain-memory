@@ -1,8 +1,7 @@
-"""Parser contract — the extraction boundary of the whole system.
+"""解析器契约——整个系统的提取边界。
 
-Everything downstream (retrieval factors, Phase-3 consolidation grouping,
-pattern separation) consumes the structured fields produced here.  Changing
-this schema changes the system's contract; treat it accordingly.
+下游的一切（检索因子、Phase 3 巩固分组、模式分离）都消费这里产出的
+结构化字段。修改这个 schema 就是修改系统契约，务必谨慎。
 """
 
 from __future__ import annotations
@@ -15,7 +14,7 @@ from brain_memory.models import ExtractedExperience
 
 @runtime_checkable
 class ExperienceParser(Protocol):
-    """Turns raw experience text into a structured :class:`ExtractedExperience`."""
+    """把原始经验文本转换为结构化 :class:`ExtractedExperience`。"""
 
     def parse(
         self,
@@ -25,10 +24,9 @@ class ExperienceParser(Protocol):
         context: str | None = None,
         timestamp: datetime | None = None,
     ) -> ExtractedExperience:
-        """Parse *text*; implementations must be side-effect free.
+        """解析 *text*；实现必须无副作用。
 
-        ``timestamp=None`` means "now" (UTC).  Implementations should never
-        raise on unusual input — degrade gracefully instead (a memory with
-        weak metadata is better than a lost experience).
+        ``timestamp=None`` 表示"现在"（UTC）。实现不应在异常输入上抛错
+        ——优雅降级：一条元数据贫弱的记忆也好过丢失的经验。
         """
         ...

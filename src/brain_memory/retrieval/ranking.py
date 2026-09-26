@@ -1,14 +1,12 @@
-"""Multi-factor scoring, normalization, and explanation.
+"""多因子打分、归一化与解释。
 
-Each factor is normalized to [0, 1] *before* weighting — raw quantities with
-different scales (bm25 ranks, ages, access counts) are not comparable.  The
-final score is the weighted sum divided by the total weight, so it stays in
-[0, 1] even for non-normalized weight vectors.
+每个因子在加权*之前*先归一化到 [0, 1]——bm25 rank、年龄、访问数这些
+量纲不同的原始值不可直接比较。最终得分是加权和除以权重总和，即使权重
+向量不归一，得分也始终落在 [0, 1]。
 
-Why explainable from day one: the explanations cost one dict comprehension
-per candidate (the factors are computed anyway), and "why was this recalled"
-is a first-class requirement of the design (doc §19), not a debugging tool
-bolted on later.
+为什么第一天就做可解释：解释只是每个候选多算一次字典推导（因子反正
+要算），而"为什么召回这条"是设计的一等需求（文档 §19），不是事后
+补丁。
 """
 
 from __future__ import annotations
@@ -25,7 +23,7 @@ _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 
 
 def normalize_bm25(rank: float) -> float:
-    """Map FTS5 bm25 rank (0 = best, larger = worse) into (0, 1]."""
+    """把 FTS5 的 bm25 rank（0 最好，越大越差）映射到 (0, 1]。"""
     return 1.0 / (1.0 + max(rank, 0.0))
 
 
@@ -34,7 +32,7 @@ def recency_factor(
     now: datetime | None = None,
     half_life_days: float = 14.0,
 ) -> float:
-    """Exponential decay: an episode half as fresh every ``half_life_days``."""
+    """指数衰减新近度：每过一个半衰期，新鲜度减半。"""
     now = now or datetime.now(timezone.utc)
     if created_at.tzinfo is None:
         created_at = created_at.replace(tzinfo=timezone.utc)
@@ -43,13 +41,14 @@ def recency_factor(
 
 
 def frequency_factor(access_count: int, cap: int = 50) -> float:
-    """Log-scaled access frequency — raw counts would dominate the score."""
+    """对数缩放的访问频率——原始计数会主导整个得分。"""
     if access_count <= 0:
         return 0.0
     return min(1.0, math.log1p(access_count) / math.log1p(max(cap, 1)))
 
 
 def jaccard(a: set[str], b: set[str]) -> float:
+    """Jaccard 相似度：交集 / 并集。"""
     if not a or not b:
         return 0.0
     return len(a & b) / len(a | b)
@@ -65,7 +64,7 @@ def compute_factors(
     now: datetime,
     half_life_days: float,
 ) -> FactorScores:
-    """Normalize every factor for one candidate episode."""
+    """为一个候选 episode 计算并归一化全部因子。"""
     episode_entities = {e.casefold() for e in episode.entities}
     episode_context = {t.casefold() for t in episode.topics}
     if episode.context:
@@ -82,6 +81,7 @@ def compute_factors(
 
 
 def score(factors: FactorScores, weights: RetrievalWeights) -> float:
+    """加权和除以权重总和——结果始终在 [0, 1]。"""
     weighted = (
         weights.semantic * factors.semantic
         + weights.keyword * factors.keyword
@@ -95,7 +95,7 @@ def score(factors: FactorScores, weights: RetrievalWeights) -> float:
 
 
 def explain(factors: FactorScores, weights: RetrievalWeights) -> list[str]:
-    """Human-readable contributions, most significant first."""
+    """人类可读的贡献解释，按显著度降序。"""
     total = weights.total()
     contributions = {
         "semantic": (weights.semantic, factors.semantic),
@@ -121,6 +121,7 @@ def explain(factors: FactorScores, weights: RetrievalWeights) -> list[str]:
 
 
 def _context_tokens(text: str) -> set[str]:
+    """上下文词元：拉丁词 + 中文二元组。"""
     tokens: set[str] = set()
     for token in _LATIN_RE.findall(text.lower()):
         if len(token) >= 2:
@@ -131,4 +132,5 @@ def _context_tokens(text: str) -> set[str]:
 
 
 def _clip01(value: float) -> float:
+    """截断到 [0, 1]。"""
     return max(0.0, min(1.0, float(value)))

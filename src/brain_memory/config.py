@@ -1,8 +1,7 @@
-"""Engine configuration.
+"""引擎配置。
 
-All knobs live here and can be set via ``MEMORY_*`` environment variables
-(see ``.env.example``) or overridden programmatically.  Nothing reads the
-environment outside of :meth:`MemoryConfig.from_env`.
+所有可调参数集中在此，可通过 ``MEMORY_*`` 环境变量（见 ``.env.example``）
+或构造时覆盖设置。除 :meth:`MemoryConfig.from_env` 外任何地方都不读环境。
 """
 
 from __future__ import annotations
@@ -18,11 +17,10 @@ ProviderName = Literal["hash", "openai_compatible"]
 
 
 class RetrievalWeights(BaseModel):
-    """Weights of the multi-factor retrieval score.
+    """多因子检索得分的权重。
 
-    Factors are each normalized to [0, 1] *before* weighting; the final score
-    is divided by the total weight so the result stays in [0, 1] even when the
-    weights do not sum to 1.
+    各因子在加权*之前*先归一化到 [0, 1]；最终得分除以权重总和，因此
+    即使权重不归一，得分也始终落在 [0, 1]。
     """
 
     semantic: float = 0.40
@@ -34,6 +32,7 @@ class RetrievalWeights(BaseModel):
     context: float = 0.05
 
     def total(self) -> float:
+        """权重总和（作归一化分母，防零保护）。"""
         return max(
             self.semantic
             + self.keyword
@@ -47,10 +46,12 @@ class RetrievalWeights(BaseModel):
 
 
 class MemoryConfig(BaseModel):
+    """引擎全局配置（存储路径 / 模型接入 / 检索与生命周期参数）。"""
+
     db_path: str = "./memory.db"
     embedding_provider: ProviderName = "hash"
     embedding_model: str = "embedding-3"
-    embedding_dim: int = 256  # hash embedder dimension; cloud providers infer from response
+    embedding_dim: int = 256  # hash 嵌入的维度；云 provider 从响应推断
     api_base: str = "https://open.bigmodel.cn/api/paas/v4"
     api_key: str = ""
 
@@ -61,37 +62,37 @@ class MemoryConfig(BaseModel):
     weights: RetrievalWeights = Field(default_factory=RetrievalWeights)
     recency_half_life_days: float = 14.0
     default_top_k: int = 5
-    # How many candidates each channel (vector / keyword) contributes before ranking.
+    # 每条通道（向量 / 关键词）贡献的候选数上限
     candidate_pool_per_channel: int = 32
 
-    # ---- Phase 2: LLM-assisted retrieval (all "auto" = active iff LLM configured) ----
+    # ---- Phase 2：LLM 辅助检索（"auto" = 配置了 LLM 才生效）----
     query_expansion: Literal["auto", "off"] = "auto"
     rerank: Literal["auto", "off"] = "auto"
     rerank_top_n: int = Field(default=20, ge=1)
     rerank_mix: float = Field(default=0.4, ge=0.0, le=1.0)
     rerank_timeout: float = Field(default=8.0, gt=0.0)
 
-    # ---- Phase 3: consolidation ----
-    # Episodes needed before a concept group may become a semantic memory.
+    # ---- Phase 3：巩固 ----
+    # 概念组成型为语义记忆所需的最少 episode 数
     consolidation_min_support: int = Field(default=3, ge=1)
-    # Cap on semantic hits inside one recall (they must not flood episodic recall).
+    # 一次召回中语义命中的上限（不能淹没情景记忆）
     semantic_recall_limit: int = Field(default=3, ge=0)
-    # ---- Phase 4: reconsolidation ----
-    # Supporting episodes needed to rewrite an existing belief (lower than
-    # initial consolidation: reconsolidation is reactive and anchored).
+    # ---- Phase 4：再巩固 ----
+    # 改写既有信念所需的支持 episode 数（低于初次巩固：再巩固是反应式的，
+    # 且有旧知识作锚）
     reconsolidation_min_support: int = Field(default=2, ge=1)
-    # ---- Phase 5: decay / forgetting ----
-    # active -> archived when computed memory strength falls below this
+    # ---- Phase 5：衰减 / 遗忘 ----
+    # 记忆强度低于该值时 active -> archived
     decay_archive_threshold: float = Field(default=0.25, ge=0.0, le=1.0)
-    # archived -> forgotten after this many days without any touch
+    # 归档后这么多天无任何访问 -> forgotten
     decay_forget_after_days: float = Field(default=90.0, gt=0.0)
-    # ---- Phase 6: graph-aware recall (pattern completion) ----
-    # expand recall hits along graph edges (deterministic, capped, penalized)
+    # ---- Phase 6：图感知召回（模式补全）----
+    # 沿图边扩展召回命中（确定性、有封顶、带罚分）
     recall_expansion: bool = True
     expansion_penalty: float = Field(default=0.6, ge=0.0, le=1.0)
     expansion_limit: int = Field(default=4, ge=0)
-    # ---- Phase 7: PersonalizedPageRank (research extension) ----
-    # blend PPR mass into recall scores: final = (1-mix)*factor + mix*ppr
+    # ---- Phase 7：PersonalizedPageRank（研究扩展）----
+    # 把 PPR 质量混入召回得分：final = (1-mix)*factor + mix*ppr
     graph_ppr: bool = False
     ppr_mix: float = Field(default=0.3, ge=0.0, le=1.0)
     ppr_damping: float = Field(default=0.85, ge=0.0, lt=1.0)
@@ -99,17 +100,18 @@ class MemoryConfig(BaseModel):
 
     @classmethod
     def from_env(cls, env_file: str | os.PathLike | None = None) -> "MemoryConfig":
-        """Build a config from ``MEMORY_*`` environment variables.
+        """从 ``MEMORY_*`` 环境变量构建配置。
 
-        Loads ``.env`` (cwd or *env_file*) first when present.  If the
-        configured provider is ``openai_compatible`` but no API key is set,
-        silently falls back to the hash embedder so the engine always runs.
+        先加载 ``.env``（cwd 或 *env_file*）。若 provider 配置为
+        ``openai_compatible`` 但没有 API key，则静默回退到 hash 嵌入器，
+        保证引擎永远可运行。
         """
         load_dotenv(env_file)
 
         def get(name: str, default: str = "") -> str:
             return os.environ.get(f"MEMORY_{name}", default) or default
 
+        # provider 解析：无 key 的云配置自动降级为离线 hash 嵌入
         provider = get("EMBEDDING_PROVIDER", "hash").strip().lower()
         api_key = get("API_KEY")
         if provider == "openai_compatible" and not api_key:
@@ -125,6 +127,7 @@ class MemoryConfig(BaseModel):
             context=float(get("W_CONTEXT", "0.05")),
         )
 
+        # 文件型数据库确保父目录存在；":memory:" 跳过
         db_path = get("DB_PATH", "./memory.db")
         if db_path != ":memory:":
             Path(db_path).parent.mkdir(parents=True, exist_ok=True)
