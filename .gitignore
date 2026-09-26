@@ -20,3 +20,5 @@ demo_memory.db*
 # local tool state
 .mimosa/
 .zcode/
+someMemory.md
+.idea/
