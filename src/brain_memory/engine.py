@@ -12,7 +12,7 @@ degrades to the deterministic path on failure; everything lifecycle-related
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import TracebackType
 
 import numpy as np
@@ -31,6 +31,7 @@ from brain_memory.extraction.heuristic import HeuristicExperienceParser
 from brain_memory.extraction.llm import LLMExperienceParser
 from brain_memory.forgetting.decay import DecaySweeper
 from brain_memory.graph.links import LinkStore
+from brain_memory.graph.ppr import personalized_pagerank
 from brain_memory.graph.view import GraphView, parse_ref
 from brain_memory.models import (
     ConflictKind,
@@ -274,6 +275,8 @@ class MemoryEngine:
         )
         if self._reranker is not None and len(results) >= 2:
             results = self._fuse_rerank(cue, results)
+        if self.config.graph_ppr:
+            results = self._blend_ppr(parsed_cue, results)
         if self.config.recall_expansion and results:
             results = self._expand_recall(
                 results,
@@ -376,6 +379,87 @@ class MemoryEngine:
         return parsed
 
     # -- graph-aware recall (pattern completion, doc §10) --------------------------
+
+    def _ppr_seeds(self, parsed_cue: ExtractedExperience) -> dict[str, float]:
+        concepts = list(dict.fromkeys(
+            e.casefold() for e in [*parsed_cue.entities, *parsed_cue.topics]
+        ))
+        return {f"c:{concept}": 1.0 for concept in concepts[:5]}
+
+    def _blend_ppr(
+        self, parsed_cue: ExtractedExperience, results: list[RecallResult]
+    ) -> list[RecallResult]:
+        """PersonalizedPageRank blended into the factor score (research
+        extension, default off).  Seeds are the cue's concepts; the PPR mass
+        rewards memories that are structurally central to what the cue is
+        about, regardless of lexical overlap."""
+        seeds = self._ppr_seeds(parsed_cue)
+        if not seeds:
+            return results
+        mass = personalized_pagerank(
+            self._db,
+            self._store,
+            self._semantic_store,
+            seeds=seeds,
+            damping=self.config.ppr_damping,
+            max_nodes=self.config.ppr_max_nodes,
+        )
+        if not mass:
+            return results
+        mix = self.config.ppr_mix
+
+        blended: list[RecallResult] = []
+        for result in results:
+            kind = "s" if result.is_semantic else "e"
+            ppr = mass.get(f"{kind}{result.episode.id}", 0.0)
+            new_score = (1.0 - mix) * result.score + mix * ppr
+            blended.append(result.model_copy(update={
+                "score": new_score,
+                "reasons": [*result.reasons,
+                            f"graph-ppr: mass {ppr:.4f} × w{mix:.2f} → {mix * ppr:.2f}"],
+            }))
+
+        # structurally-central episodes the channels missed, appended with
+        # PPR mass alone (capped, so they cannot flood the list)
+        seen = {("s" if r.is_semantic else "e", r.episode.id) for r in blended}
+        added = 0
+        for ref, ppr in sorted(mass.items(), key=lambda kv: -kv[1]):
+            if added >= 3 or not ref.startswith("e"):
+                continue
+            episode_id = int(ref[1:])
+            if ("e", episode_id) in seen:
+                continue
+            episode = self._store.get(episode_id)
+            if episode is None or not episode.is_active:
+                continue
+            seen.add(("e", episode_id))
+            added += 1
+            blended.append(RecallResult(
+                episode=episode,
+                score=mix * ppr,
+                factors=FactorScores(),
+                reasons=[f"graph-ppr: mass {ppr:.4f} (structural match)"],
+                expanded=True,
+            ))
+        blended.sort(key=lambda r: -r.score)
+        return blended
+
+    def graph_rank(self, cue: str, *, k: int = 10) -> list[tuple[str, float]]:
+        """Standalone PPR ranking for a cue (research API): node refs with
+        their mass, best first.  No blending, no factor scores."""
+        parsed_cue = self._parser.parse(cue)
+        seeds = self._ppr_seeds(parsed_cue)
+        if not seeds:
+            return []
+        mass = personalized_pagerank(
+            self._db,
+            self._store,
+            self._semantic_store,
+            seeds=seeds,
+            damping=self.config.ppr_damping,
+            max_nodes=self.config.ppr_max_nodes,
+        )
+        return sorted(mass.items(), key=lambda kv: -kv[1])[:k]
 
     def _expand_recall(
         self,
@@ -521,6 +605,58 @@ class MemoryEngine:
     def related_concepts(self, concept: str, *, limit: int = 5) -> list[tuple[str, int]]:
         """Concepts co-occurring with *concept* across active episodes."""
         return self._graph.related_concepts(concept, limit=limit)
+
+    # -- introspection (Inspector) --------------------------------------------------
+
+    def strengths(self, *, limit: int = 10) -> list[dict]:
+        """Weakest active memories by computed strength (episodes + semantics)."""
+        from brain_memory.forgetting.decay import episode_strength, semantic_strength
+
+        now = datetime.now(timezone.utc)
+        half_life = self.config.recency_half_life_days
+        rows: list[dict] = []
+        for episode in self._store.all_active():
+            rows.append({
+                "kind": "episode", "id": episode.id, "ref": f"e{episode.id}",
+                "strength": episode_strength(episode, now=now, half_life_days=half_life),
+                "label": episode.content[:80],
+            })
+        for memory in self._semantic_store.list_active():
+            rows.append({
+                "kind": "semantic", "id": memory.id, "ref": f"s{memory.id}",
+                "strength": semantic_strength(memory, now=now, half_life_days=half_life),
+                "label": memory.statement[:80],
+            })
+        rows.sort(key=lambda row: row["strength"])
+        return rows[:limit]
+
+    def timeline(self, *, days: int = 30) -> dict:
+        """Per-day counts of encodes, new knowledge, and conflicts."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        by_day: dict[str, dict] = {}
+
+        def absorb(rows, key: str) -> None:
+            for row in rows:
+                by_day.setdefault(row["day"], {})[key] = row["n"]
+
+        absorb(self._db.count_episodes_by_day(cutoff), "episodes")
+        absorb(self._db.count_semantics_by_day(cutoff), "semantics")
+        absorb(self._db.count_conflicts_by_day(cutoff), "conflicts")
+        return {
+            "days": sorted(by_day),
+            "series": [{"day": day, **by_day[day]} for day in sorted(by_day)],
+        }
+
+    def list_episodes(self, *, status: str | None = "active", limit: int = 50,
+                      offset: int = 0) -> list[Episode]:
+        """Episode list for inspection (any status; newest first)."""
+        if status == "active":
+            rows = self._db.list_active_episodes()
+        elif status == "archived":
+            rows = self._db.list_archived_episodes()
+        else:
+            rows = self._db.list_all_episodes()
+        return [self._store.row_to_episode(row) for row in rows][offset : offset + limit]
 
     def inspect(self, memory_id: int) -> dict | None:
         """Full memory details plus the most related active memories."""

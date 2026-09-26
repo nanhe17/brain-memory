@@ -342,6 +342,44 @@ graph algorithms (PersonalizedPageRank à la HippoRAG) remain a Phase 7
 research extension; one-hop expansion with provenance is what recall can
 explain today.
 
+## Phase 7 decisions
+
+### The Inspector is offline by construction
+
+No mermaid.js, no chart library, no CDN: the Inspector is one static
+HTML file (vanilla JS) over a read-only JSON API, with graph neighborhoods
+and the timeline rendered as **server-side SVG** built from plain string
+assembly.  A subgraph is at most a dozen-odd nodes — a hand-rolled layered
+layout is sufficient, keeps the whole project runnable behind a firewall,
+and the SVG endpoint is trivially testable with TestClient.  Write
+operations stay out of the UI on purpose: the Inspector is a window, the
+API is the door.
+
+### PPR is a research signal, so it is gated, blended, and measured
+
+PersonalizedPageRank runs on demand over the active subgraph (bipartite
+mentions + confidence-weighted evidence/consolidation edges; dangling mass
+teleports to the seeds) — no dense matrices, no incremental updates, O(E)
+per iteration, which is the right trade at the scales this engine targets.
+It blends as `final = (1-mix)·factor + mix·ppr` and can append structurally
+central episodes the channels missed.  It is **off by default**: on small
+stores every candidate is already directly recalled, so PPR is
+metric-neutral there (recorded in `benchmarks/ppr-ab-report.md`) — its value
+appears at scale or with real embeddings, and `brain-memory-eval` is the
+arbiter of whether it earns its keep on a given deployment.  The support
+gate lesson from Phase 4 applies here too: the blend math lives in the
+engine, not in any pluggable component.
+
+### The benchmark is a CLI, not a test
+
+Perf numbers in CI assertions produce flaky gates, so Benchmark 5 ships as
+`brain-memory-benchmark` (deterministic synthetic stream: seeded topic
+clusters + planted facts) with a markdown report; pytest keeps only a
+50-episode smoke test that the measurement machinery itself works.  With
+the hash embedder the benchmark measures latency/scale (recall p50 ≈ 7 ms,
+p95 ≈ 8 ms at 1000 episodes); with a cloud embedder the same script
+measures retrieval quality at scale.
+
 ## Known limitations (accepted for Phase 1)
 
 - Heuristic entity extraction misses bare lowercase latin tokens (e.g.

@@ -8,7 +8,14 @@ mermaid rendering; it derives everything else on demand.
 """
 
 from brain_memory.graph.links import LinkStore
+from brain_memory.graph.ppr import personalized_pagerank
 from brain_memory.graph.render import render_mermaid
 from brain_memory.graph.view import GraphView, parse_ref
 
-__all__ = ["GraphView", "LinkStore", "parse_ref", "render_mermaid"]
+__all__ = [
+    "GraphView",
+    "LinkStore",
+    "parse_ref",
+    "render_mermaid",
+    "personalized_pagerank",
+]

@@ -26,6 +26,7 @@ dev = ["pytest>=8.0", "pytest-asyncio>=0.23", "fastapi>=0.110", "uvicorn>=0.29",
 [project.scripts]
 brain-memory-demo = "brain_memory.demo:main"
 brain-memory-eval = "brain_memory.eval.__main__:main"
+brain-memory-benchmark = "brain_memory.benchmark.long_horizon:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -180,6 +180,10 @@ class Database:
         with self._lock:
             return self._conn.execute("SELECT * FROM episodes WHERE status = 'archived' ORDER BY created_at DESC").fetchall()
 
+    def list_all_episodes(self) -> list[sqlite3.Row]:
+        with self._lock:
+            return self._conn.execute("SELECT * FROM episodes ORDER BY created_at DESC").fetchall()
+
     def list_active_embeddings(self) -> list[sqlite3.Row]:
         with self._lock:
             return self._conn.execute("SELECT id, embedding, embedding_dim FROM episodes WHERE status = 'active' AND embedding IS NOT NULL").fetchall()
@@ -371,6 +375,18 @@ class Database:
         with self._lock:
             row = self._conn.execute("SELECT COUNT(*) AS n FROM memory_conflicts WHERE status = 'open'").fetchone()
         return int(row["n"])
+
+    def count_episodes_by_day(self, cutoff_iso: str) -> list[sqlite3.Row]:
+        with self._lock:
+            return self._conn.execute("SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS n FROM episodes WHERE created_at >= ? GROUP BY day ORDER BY day", (cutoff_iso,)).fetchall()
+
+    def count_semantics_by_day(self, cutoff_iso: str) -> list[sqlite3.Row]:
+        with self._lock:
+            return self._conn.execute("SELECT substr(created_at, 1, 10) AS day, COUNT(*) AS n FROM semantic_memories WHERE created_at >= ? GROUP BY day ORDER BY day", (cutoff_iso,)).fetchall()
+
+    def count_conflicts_by_day(self, cutoff_iso: str) -> list[sqlite3.Row]:
+        with self._lock:
+            return self._conn.execute("SELECT substr(detected_at, 1, 10) AS day, COUNT(*) AS n FROM memory_conflicts WHERE detected_at >= ? GROUP BY day ORDER BY day", (cutoff_iso,)).fetchall()
 
     def list_conflicts(self) -> list[sqlite3.Row]:
         with self._lock:

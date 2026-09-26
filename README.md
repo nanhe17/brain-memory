@@ -157,6 +157,52 @@ engine.related_concepts("java")          # co-occurrence: [('spring', 2), ...]
   read time — no cascade deletes, `restore()` brings relationships back by
   itself.
 
+## What Phase 7 adds: Inspector, scale benchmark, PPR
+
+### Inspector UI (offline, zero JS dependencies)
+
+```bash
+pip install -e '.[server]'
+uvicorn brain_memory.api.app:create_app --factory
+# open http://127.0.0.1:8000/
+```
+
+A single-page dashboard (vanilla JS + server-side SVG — no CDN, no build
+step) over a read-only JSON API: **Overview** (stats + config), **Timeline**
+(encodes / new knowledge / conflicts per day), **Memories** (both stores +
+detail drawers with version chains, conflict history and evidence),
+**Graph** (typed neighborhood as SVG + edge table), **Recall Playground**
+(type a cue, see the full factor decomposition and provenance), and
+**Forgetting** (strength ranking, decay preview, conflicts).
+
+### Long-horizon benchmark (doc Benchmark 5)
+
+```bash
+brain-memory-benchmark --episodes 1000 --queries 50 \
+  --report benchmarks/long-horizon-report.md
+```
+
+Deterministic synthetic stream (topic clusters + planted facts), measuring
+encode throughput, recall p50/p95, planted-fact Recall@5, store size,
+consolidation/decay/neighborhood/PPR costs.  Reference numbers at 1000
+episodes on the hash embedder: recall p50 ≈ 7 ms, p95 ≈ 8 ms, Recall@5 = 1.0
+(see `benchmarks/long-horizon-report.md`).  Not a pytest — perf does not
+belong in CI assertions; a 50-episode smoke test guards the script itself.
+
+### PersonalizedPageRank (research extension, default off)
+
+```bash
+MEMORY_GRAPH_PPR=on brain-memory-eval --scenarios benchmarks/scenarios
+```
+
+PPR mass over the active subgraph (seeded by the cue's concepts) blends into
+the factor score as `final = (1-mix)·factor + mix·ppr`, and can surface
+structurally-central memories that lexical channels miss.  Recomputed on
+demand (O(E) per round — tens of milliseconds at 10k memories); standalone
+API: `engine.graph_rank(cue, k)`.  Off by default — on the seed scenarios it
+is metric-neutral (see `benchmarks/ppr-ab-report.md`); the harness decides,
+not intuition.
+
 ## What Phase 4 adds: reconsolidation
 
 Beliefs evolve.  When new evidence challenges a consolidated statement, the
@@ -324,7 +370,7 @@ frequency, CJK-aware FTS indexing, heuristic-first importance scoring.
 
 ```bash
 pip install -e '.[dev]'
-pytest                 # 180 tests
+pytest                 # 202 tests
 ```
 
 Tests cover parsing, embeddings, storage, ranking, retrieval, working memory,
@@ -341,7 +387,7 @@ transport), and the evaluation harness.
 | 4 | reconsolidation: conflict detection, temporal-narrative evolution | ✅ |
 | 5 | decay scheduler, memory strength, archive GC | ✅ |
 | 6 | memory graph read model, explicit links, graph-aware recall | ✅ |
-| 7 | inspector UI, long-horizon benchmark, global graph algorithms (PPR) | planned |
+| 7 | Inspector UI, long-horizon benchmark, PersonalizedPageRank | ✅ |
 
 ## License
 

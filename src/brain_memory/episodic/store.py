@@ -102,6 +102,9 @@ class EpisodicStore:
     def all_active(self) -> list[Episode]:
         return [self.row_to_episode(row) for row in self._db.list_active_episodes()]
 
+    def list_all(self) -> list[Episode]:
+        return [self.row_to_episode(row) for row in self._db.list_all_episodes()]
+
     def fts_search(self, match_expr: str, limit: int) -> list[tuple[Episode, float]]:
         """Keyword candidates; rank is raw bm25 (smaller is better)."""
         results: list[tuple[Episode, float]] = []

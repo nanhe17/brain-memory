@@ -90,6 +90,12 @@ class MemoryConfig(BaseModel):
     recall_expansion: bool = True
     expansion_penalty: float = Field(default=0.6, ge=0.0, le=1.0)
     expansion_limit: int = Field(default=4, ge=0)
+    # ---- Phase 7: PersonalizedPageRank (research extension) ----
+    # blend PPR mass into recall scores: final = (1-mix)*factor + mix*ppr
+    graph_ppr: bool = False
+    ppr_mix: float = Field(default=0.3, ge=0.0, le=1.0)
+    ppr_damping: float = Field(default=0.85, ge=0.0, lt=1.0)
+    ppr_max_nodes: int = Field(default=20000, ge=1)
 
     @classmethod
     def from_env(cls, env_file: str | os.PathLike | None = None) -> "MemoryConfig":
@@ -148,4 +154,8 @@ class MemoryConfig(BaseModel):
             recall_expansion=get("RECALL_EXPANSION", "on").strip().lower() == "on",
             expansion_penalty=float(get("EXPANSION_PENALTY", "0.6")),
             expansion_limit=int(get("EXPANSION_LIMIT", "4")),
+            graph_ppr=get("GRAPH_PPR", "off").strip().lower() == "on",
+            ppr_mix=float(get("PPR_MIX", "0.3")),
+            ppr_damping=float(get("PPR_DAMPING", "0.85")),
+            ppr_max_nodes=int(get("PPR_MAX_NODES", "20000")),
         )

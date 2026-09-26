@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Brain Memory Inspector</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; background: #f1f5f9; color: #0f172a; }
+  header { background: #0f172a; color: #f8fafc; padding: 12px 24px; display: flex; gap: 24px; align-items: baseline; }
+  header h1 { font-size: 16px; margin: 0; }
+  nav button { background: transparent; border: none; color: #94a3b8; padding: 8px 12px; cursor: pointer; font-size: 14px; }
+  nav button.active { color: #f8fafc; border-bottom: 2px solid #38bdf8; }
+  main { max-width: 1100px; margin: 24px auto; padding: 0 16px; }
+  .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 10px; padding: 16px 20px; margin-bottom: 16px; }
+  .card h2 { margin: 0 0 12px; font-size: 15px; color: #334155; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #e2e8f0; }
+  th { color: #64748b; font-weight: 600; }
+  .muted { color: #64748b; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11px; background: #e2e8f0; }
+  .pill.active { background: #dcfce7; } .pill.archived { background: #fef9c3; } .pill.forgotten { background: #fee2e2; }
+  .kv { display: grid; grid-template-columns: 220px 1fr; gap: 4px 16px; font-size: 13px; }
+  input[type=text], select { padding: 6px 10px; border: 1px solid #cbd5e1; border-radius: 6px; font-size: 13px; }
+  button.go { background: #0ea5e9; color: #fff; border: none; border-radius: 6px; padding: 6px 14px; cursor: pointer; }
+  pre { background: #0f172a; color: #e2e8f0; padding: 12px; border-radius: 8px; font-size: 12px; overflow-x: auto; }
+  .hidden { display: none; }
+  img.svg { max-width: 100%; border: 1px solid #e2e8f0; border-radius: 8px; background: #f8fafc; }
+  .row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  .bar { height: 10px; background: #0ea5e9; border-radius: 5px; min-width: 2px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Brain Memory Inspector</h1>
+  <nav>
+    <button data-tab="overview" class="active">Overview</button>
+    <button data-tab="timeline">Timeline</button>
+    <button data-tab="memories">Memories</button>
+    <button data-tab="graph">Graph</button>
+    <button data-tab="playground">Recall Playground</button>
+    <button data-tab="forgetting">Forgetting</button>
+  </nav>
+</header>
+<main>
+  <section id="tab-overview">
+    <div class="card"><h2>Overview</h2><div id="overview" class="kv">loading…</div></div>
+  </section>
+  <section id="tab-timeline" class="hidden">
+    <div class="card"><h2>Timeline (episodes / new knowledge / conflicts per day)</h2>
+      <div id="timeline"></div></div>
+  </section>
+  <section id="tab-memories" class="hidden">
+    <div class="card"><h2>Episodes</h2>
+      <div class="row">
+        <select id="mem-status">
+          <option value="active">active</option>
+          <option value="archived">archived</option>
+          <option value="">all</option>
+        </select>
+        <button class="go" onclick="loadMemories()">reload</button>
+        <span class="muted" id="mem-total"></span>
+      </div>
+      <div id="mem-table"></div>
+    </div>
+    <div class="card"><h2>Semantic memories</h2><div id="sem-table"></div></div>
+    <div class="card hidden" id="detail"><h2>Detail</h2><div id="detail-body"></div></div>
+  </section>
+  <section id="tab-graph" class="hidden">
+    <div class="card"><h2>Neighborhood</h2>
+      <div class="row">
+        <input type="text" id="graph-ref" value="e1" placeholder="e1 / s1 / c:java">
+        <label><input type="checkbox" id="graph-similar"> similar_to</label>
+        <button class="go" onclick="loadGraph()">render</button>
+      </div>
+      <div id="graph-svg"></div>
+      <h2>Edges</h2><div id="graph-edges"></div>
+    </div>
+  </section>
+  <section id="tab-playground" class="hidden">
+    <div class="card"><h2>Recall Playground</h2>
+      <div class="row">
+        <input type="text" id="play-cue" style="flex:1" placeholder="type a cue…">
+        <button class="go" onclick="runRecall()">recall</button>
+      </div>
+      <div id="play-out"></div>
+    </div>
+  </section>
+  <section id="tab-forgetting" class="hidden">
+    <div class="card"><h2>Weakest memories (computed strength)</h2><div id="strengths"></div></div>
+    <div class="card"><h2>Decay preview (dry run)</h2><div id="decay-preview"></div></div>
+    <div class="card"><h2>Conflicts</h2><div id="conflicts"></div></div>
+  </section>
+</main>
+<script>
+const $ = (id) => document.getElementById(id);
+function h(tag, attrs = {}, ...children) {
+  const el = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "onclick") el.onclick = v;
+    else if (k.startsWith("_")) el.innerHTML = v;
+    else el.setAttribute(k, v);
+  }
+  for (const child of children) el.append(child);
+  return el;
+}
+const pill = (s) => `<span class="pill ${s}">${s}</span>`;
+
+document.querySelectorAll("nav button").forEach(btn => {
+  btn.onclick = () => {
+    document.querySelectorAll("nav button").forEach(b => b.classList.remove("active"));
+    btn.classList.add("active");
+    document.querySelectorAll("main section").forEach(s => s.classList.add("hidden"));
+    $("tab-" + btn.dataset.tab).classList.remove("hidden");
+    ({ overview: loadOverview, timeline: loadTimeline, memories: loadMemories,
+       graph: loadGraph, playground: () => {}, forgetting: loadForgetting })[btn.dataset.tab]();
+  };
+});
+
+async function j(url) { const r = await fetch(url); if (!r.ok) throw new Error(await r.text()); return r.json(); }
+
+async function loadOverview() {
+  const o = await j("/api/overview");
+  const s = o.stats;
+  $("overview").innerHTML = [
+    ["episodes (active/archived/forgotten)", `${s.active} / ${s.archived} / ${s.forgotten}`],
+    ["semantic memories", s.semantic_memories],
+    ["open conflicts", s.open_conflicts],
+    ["distinct entities", s.distinct_entities],
+    ["avg importance", s.avg_importance],
+    ["embedding provider", o.embedding_provider],
+    ["retrieval weights", JSON.stringify(o.weights)],
+    ["decay", `archive < ${o.decay.archive_threshold}, forget after ${o.decay.forget_after_days}d`],
+    ["consolidation min support", o.consolidation_min_support],
+    ["graph PPR", o.graph_ppr ? "on" : "off"],
+  ].map(([k, v]) => `<div>${k}</div><div><b>${v}</b></div>`).join("");
+}
+
+async function loadTimeline() {
+  const t = await j("/api/timeline?days=60");
+  const max = Math.max(1, ...t.series.map(d => d.episodes || 0));
+  $("timeline").innerHTML = t.series.length === 0
+    ? `<div class="muted">no activity in the window</div>`
+    : `<table><tr><th>day</th><th>episodes</th><th></th><th>knowledge</th><th>conflicts</th></tr>` +
+      t.series.map(d => `<tr><td>${d.day}</td><td>${d.episodes || 0}</td>` +
+        `<td><div class="bar" style="width:${(d.episodes || 0) / max * 300}px"></div></td>` +
+        `<td>${d.semantics || 0}</td><td>${d.conflicts || 0}</td></tr>`).join("") +
+      `</table>`;
+}
+
+async function loadMemories() {
+  const status = $("mem-status").value;
+  const data = await j(`/api/memories?status=${status}&limit=50`);
+  $("mem-total").textContent = `${data.total} episodes in store`;
+  $("mem-table").innerHTML = `<table><tr><th>id</th><th>status</th><th>imp</th><th>content</th><th></th></tr>` +
+    data.episodes.map(e => `<tr><td>#${e.id}</td><td>${pill(e.status)}</td><td>${e.importance}</td>` +
+      `<td>${e.content.slice(0, 90)}</td>` +
+      `<td><button class="go" onclick="showEpisode(${e.id})">detail</button></td></tr>`).join("") +
+    `</table>`;
+  $("sem-table").innerHTML = data.semantics.length === 0
+    ? `<div class="muted">none yet — run consolidate()</div>`
+    : `<table><tr><th>id</th><th>concept</th><th>kind</th><th>v</th><th>conf</th><th>statement</th><th></th></tr>` +
+      data.semantics.map(m => `<tr><td>S-${m.id}</td><td>${m.concept}</td><td>${m.kind}</td>` +
+        `<td>${m.version}</td><td>${m.confidence}</td><td>${m.statement.slice(0, 90)}</td>` +
+        `<td><button class="go" onclick="showSemantic(${m.id})">detail</button></td></tr>`).join("") +
+      `</table>`;
+}
+
+async function showEpisode(id) {
+  const d = await j(`/api/memories/episode/${id}`);
+  $("detail").classList.remove("hidden");
+  const e = d.episode;
+  $("detail-body").innerHTML =
+    `<div class="kv"><div>content</div><div>${e.content}</div>` +
+    `<div>status</div><div>${pill(e.status)}</div>` +
+    `<div>importance / confidence</div><div>${e.importance} / ${e.confidence}</div>` +
+    `<div>access count</div><div>${e.access_count}</div>` +
+    `<div>entities</div><div>${e.entities.join(", ") || "—"}</div>` +
+    `<div>key facts</div><div>${e.key_facts.join(" · ") || "—"}</div>` +
+    `<div>related</div><div>${d.related.map(r => "#" + r.id).join(", ") || "—"}</div></div>`;
+}
+
+async function showSemantic(id) {
+  const d = await j(`/api/memories/semantic/${id}`);
+  $("detail").classList.remove("hidden");
+  const m = d.semantic;
+  $("detail-body").innerHTML =
+    `<div class="kv"><div>statement</div><div>${m.statement}</div>` +
+    `<div>concept / kind</div><div>${m.concept} / ${m.kind}</div>` +
+    `<div>version</div><div>${m.version} (confidence ${m.confidence})</div>` +
+    `<div>evidence</div><div>${d.evidence.map(e => "#" + e.id).join(", ") || "—"}</div></div>` +
+    `<h2 style="margin-top:12px">Versions</h2>` +
+    d.versions.map(v => `<div class="muted">v${v.version} — ${v.change_reason} — ${v.statement}</div>`).join("") +
+    `<h2 style="margin-top:12px">Conflicts</h2>` +
+    (d.conflicts.length === 0 ? `<div class="muted">none</div>` :
+      d.conflicts.map(c => `<div class="muted">[${c.kind}/${c.status}] v${c.old_version}→v${c.resolution_version || "-"}: was “${c.statement_before || ""}”</div>`).join(""));
+}
+
+async function loadGraph() {
+  const ref = $("graph-ref").value.trim() || "e1";
+  const similar = $("graph-similar").checked;
+  $("graph-svg").innerHTML = `<img class="svg" src="/api/graph/${encodeURIComponent(ref)}.svg?similar=${similar}">`;
+  const data = await j(`/api/graph/${encodeURIComponent(ref)}.json`);
+  $("graph-edges").innerHTML = `<table><tr><th>source</th><th>edge</th><th>target</th><th>provenance</th><th>weight</th></tr>` +
+    data.edges.map(e => `<tr><td>${e.source}</td><td>${e.kind}</td><td>${e.target}</td>` +
+      `<td>${e.provenance}</td><td>${e.weight}</td></tr>`).join("") + `</table>`;
+}
+
+async function runRecall() {
+  const cue = $("play-cue").value.trim();
+  if (!cue) return;
+  const hits = await j(`/recall`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cue, k: 5 }),
+  });
+  $("play-out").innerHTML = hits.length === 0
+    ? `<div class="muted">nothing recalled</div>`
+    : hits.map(h => {
+        const kind = h.episode.content_hash && h.episode.content_hash.startsWith("semantic") ? "S" : "E";
+        return `<div class="card" style="margin-bottom:8px">` +
+          `<b>${kind}-${h.episode.id}</b> <span class="pill">${h.score.toFixed(3)}</span>` +
+          `${h.expanded ? ' <span class="pill">graph-expanded</span>' : ""}` +
+          `<div>${h.episode.content}</div>` +
+          `<pre>${h.reasons.join("\n")}</pre></div>`;
+      }).join("");
+}
+
+async function loadForgetting() {
+  const strengths = await j("/api/strengths?limit=10");
+  $("strengths").innerHTML = `<table><tr><th>ref</th><th>strength</th><th></th><th>label</th></tr>` +
+    strengths.map(s => `<tr><td>${s.ref}</td><td>${s.strength}</td>` +
+      `<td><div class="bar" style="width:${s.strength * 200}px;background:${s.strength < 0.25 ? "#ef4444" : "#0ea5e9"}"></div></td>` +
+      `<td>${s.label}</td></tr>`).join("") + `</table>`;
+  const preview = await j("/api/decay/preview");
+  $("decay-preview").innerHTML =
+    `<div class="muted">would archive: ${preview.archived_episode_ids.join(", ") || "none"} · ` +
+    `forget: ${preview.forgotten_episode_ids.join(", ") || "none"} · ` +
+    `protected evidence: ${preview.protected_evidence_count}</div>`;
+  const conflicts = await j("/api/conflicts");
+  $("conflicts").innerHTML = conflicts.length === 0
+    ? `<div class="muted">none recorded</div>`
+    : `<table><tr><th>id</th><th>semantic</th><th>kind</th><th>status</th><th>was</th></tr>` +
+      conflicts.map(c => `<tr><td>#${c.id}</td><td>S-${c.semantic_id}</td><td>${c.kind}</td>` +
+        `<td>${pill(c.status)}</td><td>${(c.statement_before || "").slice(0, 80)}</td></tr>`).join("") +
+      `</table>`;
+}
+
+loadOverview();
+</script>
+</body>
+</html>
